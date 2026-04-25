@@ -15,6 +15,10 @@
 
     #panel { flex: 1; min-width: 240px; max-width: 320px; display: flex; flex-direction: column; border-left: 2px solid #333; background: #16213e; }
 
+    #poll-bar { height: 3px; background: #333; flex-shrink: 0; }
+    #poll-bar-fill { height: 100%; width: 0%; background: #4ade80; transition: none; }
+    #poll-bar-fill.running { transition: width 30s linear; width: 100%; }
+
     #chat-log { flex: 1; padding: 12px; overflow-y: auto; }
     #chat-log h3 { font-size: 13px; color: #7fdbca; margin-bottom: 8px; }
     .chat-entry { margin-bottom: 10px; font-size: 11px; line-height: 1.4; }
@@ -55,6 +59,7 @@
   <div id="app">
     <div id="game-container"></div>
     <div id="panel">
+      <div id="poll-bar"><div id="poll-bar-fill"></div></div>
       <div id="chat-log">
         <h3>💬 Chat Log</h3>
       </div>

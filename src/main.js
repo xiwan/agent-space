@@ -61,12 +61,20 @@ function boot(cfg) {
   });
   client.start(cfg.pollInterval);
 
-  // Chat logs: poll every 30s
+  // Chat logs: poll every 30s with progress bar
+  const barFill = document.getElementById('poll-bar-fill');
+  function resetBar() {
+    barFill.classList.remove('running');
+    barFill.offsetWidth; // force reflow
+    barFill.classList.add('running');
+  }
+
   async function pollLogs() {
     try {
       const data = await client._fetch('/heartbeat/logs');
       if (data) chatLog.updateFromLogs(data.logs || []);
     } catch {}
+    resetBar();
   }
   pollLogs();
   setInterval(pollLogs, 30000);
