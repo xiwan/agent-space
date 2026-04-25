@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.DS_Store
+
+# AIDLC local files
+OPERATIONS.md
+versions/
+design/
+scratch/
