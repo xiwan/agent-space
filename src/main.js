@@ -5,6 +5,7 @@ import OfficeScene from './scenes/OfficeScene.js';
 
 const game = new Phaser.Game({
   type: Phaser.AUTO,
+  parent: 'game',
   width: config.gameWidth,
   height: config.gameHeight,
   pixelArt: true,

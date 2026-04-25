@@ -3,6 +3,7 @@ import config from '../config.js';
 import BridgeClient from '../bridge/BridgeClient.js';
 import AgentSprite from '../sprites/AgentSprite.js';
 import StatusBar from '../ui/StatusBar.js';
+import LogPanel from '../ui/LogPanel.js';
 
 export default class OfficeScene extends Phaser.Scene {
   constructor() {
@@ -24,6 +25,9 @@ export default class OfficeScene extends Phaser.Scene {
       callback: () => this.poll(),
       loop: true,
     });
+
+    // Log panel (DOM-based, right side)
+    this.logPanel = new LogPanel();
   }
 
   drawOffice() {
