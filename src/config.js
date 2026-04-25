@@ -1,8 +1,12 @@
 const isBrowser = typeof window !== 'undefined' && typeof localStorage !== 'undefined';
 
-export default {
-  bridgeUrl: (isBrowser && localStorage.getItem('bridge_url')) || 'http://localhost:3010',
-  bridgeToken: (isBrowser && localStorage.getItem('bridge_token')) || '',
+const config = {
+  get bridgeUrl() {
+    return (isBrowser && localStorage.getItem('bridge_url')) || 'http://localhost:18010';
+  },
+  get bridgeToken() {
+    return (isBrowser && localStorage.getItem('bridge_token')) || '';
+  },
   pollInterval: {
     health: 10000,
     heartbeat: 10000,
@@ -18,3 +22,5 @@ export default {
   gameWidth: 480,
   gameHeight: 320,
 };
+
+export default config;
