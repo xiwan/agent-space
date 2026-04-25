@@ -15,16 +15,6 @@
 
     #panel { flex: 1; min-width: 240px; max-width: 320px; display: flex; flex-direction: column; border-left: 2px solid #333; background: #16213e; }
 
-    #agent-list { flex: 0 0 auto; padding: 12px; border-bottom: 2px solid #333; overflow-y: auto; max-height: 40%; }
-    #agent-list h3 { font-size: 13px; color: #7fdbca; margin-bottom: 8px; }
-    .agent-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12px; }
-    .agent-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-    .dot-idle { background: #4ade80; }
-    .dot-busy { background: #facc15; animation: pulse 1s infinite; }
-    .dot-offline { background: #666; }
-    .dot-error { background: #ef4444; }
-    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-
     #chat-log { flex: 1; padding: 12px; overflow-y: auto; }
     #chat-log h3 { font-size: 13px; color: #7fdbca; margin-bottom: 8px; }
     .chat-entry { margin-bottom: 10px; font-size: 11px; line-height: 1.4; }
@@ -65,9 +55,6 @@
   <div id="app">
     <div id="game-container"></div>
     <div id="panel">
-      <div id="agent-list">
-        <h3>🤖 Agents</h3>
-      </div>
       <div id="chat-log">
         <h3>💬 Chat Log</h3>
       </div>

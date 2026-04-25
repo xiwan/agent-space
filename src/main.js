@@ -1,7 +1,6 @@
 import Phaser from 'phaser';
 import { loadConfig, saveConfig } from './config.js';
 import { BridgeClient } from './bridge/BridgeClient.js';
-import { AgentPanel } from './ui/AgentPanel.js';
 import { ChatLog } from './ui/ChatLog.js';
 import { BootScene } from './scenes/BootScene.js';
 import { OfficeScene } from './scenes/OfficeScene.js';
@@ -16,7 +15,6 @@ const config = loadConfig();
 urlInput.value = config.bridgeUrl;
 tokenInput.value = config.authToken;
 
-// Auto-connect if config exists
 if (config.authToken) {
   boot(config);
 } else {
@@ -34,7 +32,6 @@ formEl.addEventListener('submit', (e) => {
 function boot(cfg) {
   setupEl.classList.add('hidden');
 
-  // Phaser game
   const game = new Phaser.Game({
     type: Phaser.AUTO,
     parent: 'game-container',
@@ -49,24 +46,28 @@ function boot(cfg) {
     scene: [BootScene, OfficeScene],
   });
 
-  // HTML panels
-  const agentPanel = new AgentPanel(document.getElementById('agent-list'));
   const chatLog = new ChatLog(document.getElementById('chat-log'));
 
-  // Bridge client
   const useProxy = window.location.hostname === 'localhost';
   const baseUrl = useProxy ? '/api' : cfg.bridgeUrl;
   const client = new BridgeClient(baseUrl, cfg.authToken);
 
+  // Agent status: poll every 10s
   client.onChange((c) => {
-    agentPanel.update(c);
-    chatLog.update(c);
-    // Update Phaser scene
     const office = game.scene.getScene('Office');
     if (office && office.scene.isActive()) {
       office.updateFromBridge(c);
     }
   });
-
   client.start(cfg.pollInterval);
+
+  // Chat logs: poll every 30s
+  async function pollLogs() {
+    try {
+      const data = await client._fetch('/heartbeat/logs');
+      if (data) chatLog.updateFromLogs(data.logs || []);
+    } catch {}
+  }
+  pollLogs();
+  setInterval(pollLogs, 30000);
 }
