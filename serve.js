@@ -18,7 +18,7 @@ app.use('/api', createProxyMiddleware({
 
 // Serve static build
 app.use(express.static(join(__dirname, 'dist')));
-app.get('*', (req, res) => res.sendFile(join(__dirname, 'dist', 'index.html')));
+app.get('/{*splat}', (req, res) => res.sendFile(join(__dirname, 'dist', 'index.html')));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Agent Space → http://0.0.0.0:${PORT}`);
