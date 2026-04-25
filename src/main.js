@@ -1,11 +1,7 @@
-import Phaser from 'phaser';
 import { loadConfig, saveConfig } from './config.js';
 import { BridgeClient } from './bridge/BridgeClient.js';
 import { ChatLog } from './ui/ChatLog.js';
-import { BootScene } from './scenes/BootScene.js';
-import { OfficeScene } from './scenes/OfficeScene.js';
 
-// --- Setup form ---
 const setupEl = document.getElementById('setup');
 const formEl = document.getElementById('setup-form');
 const urlInput = document.getElementById('bridge-url');
@@ -32,40 +28,14 @@ formEl.addEventListener('submit', (e) => {
 function boot(cfg) {
   setupEl.classList.add('hidden');
 
-  const game = new Phaser.Game({
-    type: Phaser.AUTO,
-    parent: 'game-container',
-    width: cfg.gameWidth,
-    height: cfg.gameHeight,
-    pixelArt: true,
-    scale: {
-      mode: Phaser.Scale.FIT,
-      autoCenter: Phaser.Scale.CENTER_BOTH,
-    },
-    backgroundColor: '#0f0f23',
-    scene: [BootScene, OfficeScene],
-  });
-
   const chatLog = new ChatLog(document.getElementById('chat-log'));
-
-  const useProxy = window.location.hostname === 'localhost';
-  const baseUrl = useProxy ? '/api' : cfg.bridgeUrl;
+  const baseUrl = '/api';
   const client = new BridgeClient(baseUrl, cfg.authToken);
 
-  // Agent status: poll every 10s
-  client.onChange((c) => {
-    const office = game.scene.getScene('Office');
-    if (office && office.scene.isActive()) {
-      office.updateFromBridge(c);
-    }
-  });
-  client.start(cfg.pollInterval);
-
-  // Chat logs: poll every 30s with progress bar
   const barFill = document.getElementById('poll-bar-fill');
   function resetBar() {
     barFill.classList.remove('running');
-    barFill.offsetWidth; // force reflow
+    barFill.offsetWidth;
     barFill.classList.add('running');
   }
 
