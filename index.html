@@ -10,10 +10,9 @@
 
     #app { display: flex; height: 100vh; }
 
-    #game-container { flex: 3; min-width: 0; background: #0f0f23; }
-    #game-container canvas { display: block; width: 100% !important; height: 100% !important; image-rendering: pixelated; }
+    #game-container { display: none; }
 
-    #panel { flex: 1; min-width: 240px; max-width: 320px; display: flex; flex-direction: column; border-left: 2px solid #333; background: #16213e; }
+    #panel { flex: 1; display: flex; flex-direction: column; background: #16213e; }
 
     #poll-bar { height: 3px; background: #333; flex-shrink: 0; }
     #poll-bar-fill { height: 100%; width: 0%; background: #4ade80; transition: none; }
