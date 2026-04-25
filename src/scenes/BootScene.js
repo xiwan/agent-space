@@ -1,48 +1,34 @@
 import Phaser from 'phaser';
-import config from '../config.js';
 
-export default class BootScene extends Phaser.Scene {
-  constructor() {
-    super('Boot');
-  }
+const TILE = 32;
+const FLOOR = 0xd2b48c;
+const WALL  = 0x8b8b8b;
+const DESK  = 0x8b6914;
+const MONITOR_OFF = 0x444444;
+const MONITOR_ON  = 0x00ccff;
+
+/** BootScene — generates placeholder tilemap textures. */
+export class BootScene extends Phaser.Scene {
+  constructor() { super('Boot'); }
 
   create() {
-    if (!config.bridgeToken) {
-      this.showConfigDialog();
-    } else {
-      this.scene.start('Office');
-    }
+    this._makeTile('tile-floor', FLOOR);
+    this._makeTile('tile-wall', WALL);
+    this._makeTile('tile-desk', DESK);
+    this._makeTile('tile-monitor-off', MONITOR_OFF, 12, 10);
+    this._makeTile('tile-monitor-on', MONITOR_ON, 12, 10);
+    this._makeTile('tile-plant', 0x228b22, 16, 20);
+    this._makeTile('tile-window', 0x87ceeb, TILE, 12);
+    this.scene.start('Office');
   }
 
-  showConfigDialog() {
-    const overlay = document.createElement('div');
-    Object.assign(overlay.style, {
-      position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.8)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      zIndex: '9999', fontFamily: 'monospace',
-    });
-
-    overlay.innerHTML = `
-      <div style="background:#2b2b3d;padding:24px;border-radius:8px;color:#ccc;width:340px">
-        <h3 style="margin:0 0 16px;color:#fff">🏢 Agent Space</h3>
-        <label style="display:block;margin-bottom:4px;font-size:12px">ACP Bridge Token</label>
-        <input id="as-token" type="password" placeholder="Enter token"
-          style="width:100%;padding:6px;margin-bottom:16px;background:#1a1a2e;color:#fff;border:1px solid #555;border-radius:4px;font-family:monospace" />
-        <button id="as-go"
-          style="width:100%;padding:8px;background:#44aa44;color:#fff;border:none;border-radius:4px;cursor:pointer;font-family:monospace">
-          Connect
-        </button>
-      </div>
-    `;
-
-    document.body.appendChild(overlay);
-
-    document.getElementById('as-go').addEventListener('click', () => {
-      const token = document.getElementById('as-token').value.trim();
-      if (!token) return;
-      localStorage.setItem('bridge_token', token);
-      overlay.remove();
-      this.scene.start('Office');
-    });
+  _makeTile(key, color, w = TILE, h = TILE) {
+    const g = this.add.graphics();
+    g.fillStyle(color, 1);
+    g.fillRect(0, 0, w, h);
+    g.lineStyle(1, 0x000000, 0.15);
+    g.strokeRect(0, 0, w, h);
+    g.generateTexture(key, w, h);
+    g.destroy();
   }
 }

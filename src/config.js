@@ -1,34 +1,26 @@
-const isBrowser = typeof window !== 'undefined' && typeof localStorage !== 'undefined';
-
-if (isBrowser) {
-  // Clear stale direct URLs — must use proxy now
-  const old = localStorage.getItem('bridge_url');
-  if (old && old.startsWith('http')) {
-    localStorage.removeItem('bridge_url');
-  }
-}
-
-const config = {
-  get bridgeUrl() {
-    return (isBrowser && localStorage.getItem('bridge_url')) || '/api';
-  },
-  get bridgeToken() {
-    return (isBrowser && localStorage.getItem('bridge_token')) || '';
-  },
-  pollInterval: {
-    health: 10000,
-    heartbeat: 10000,
-    logs: 10000,
-    stats: 30000,
-  },
-  office: {
-    cols: 5,
-    rows: 2,
-    maxSlots: 10,
-  },
-  tile: 32,
+const DEFAULTS = {
+  bridgeUrl: 'http://localhost:18010',
+  authToken: '',
+  pollInterval: 10000,
+  statsPollInterval: 30000,
+  maxChatEntries: 50,
+  maxDesks: 10,
+  tileSize: 32,
   gameWidth: 480,
   gameHeight: 320,
 };
 
-export default config;
+/** Load config from localStorage, merged with defaults. */
+export function loadConfig() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('agent-space-config') || '{}');
+    return { ...DEFAULTS, ...saved };
+  } catch {
+    return { ...DEFAULTS };
+  }
+}
+
+/** Save config to localStorage. */
+export function saveConfig(cfg) {
+  try { localStorage.setItem('agent-space-config', JSON.stringify(cfg)); } catch {}
+}

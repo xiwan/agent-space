@@ -263,24 +263,51 @@ any ──(healthy=false)──► error
 - 显示 2-3 秒后淡出
 - 多 agent 同时说话时气泡错开避免重叠
 
+## 页面布局
+
+```
+┌──────────────────────────────┬──────────┐
+│                              │ 🟢 kiro  │
+│                              │ 🔴 claude│
+│     像素办公室                │ ⚡ qwen  │
+│     (Phaser Canvas)          │ 🟢 hermes│
+│                              │ ...      │
+│     左侧 3/4                 ├──────────┤
+│                              │ 对话日志  │
+│                              │ ──────── │
+│                              │ claude:  │
+│                              │  "I'll..."│
+│                              │ qwen:    │
+│                              │  "Let me."│
+│                              │ 右侧 1/4 │
+└──────────────────────────────┴──────────┘
+```
+
+右侧面板分两区：
+- **上半：Agent 状态列表** — 实时显示每个 agent 的状态（🟢 idle / ⚡ busy / 🔴 offline / ❌ error），状态变化时高亮闪烁
+- **下半：对话日志** — 心跳对话流，最新的在上面，滚动查看历史，silent 的不显示
+
+面板是普通 HTML/CSS，不在 Phaser Canvas 内，方便文字渲染和滚动。
+
 ## 响应式 / 移动端
 
-- Phaser 的 `Scale.FIT` 模式，画布自动缩放适配屏幕
-- 基础分辨率：**480×320**（经典像素游戏分辨率），整数倍缩放
-- 移动端：横屏提示，或竖屏时地图自动旋转/缩放
+- 桌面：左 3/4 Canvas + 右 1/4 面板，并排
+- 移动端竖屏：Canvas 占满宽度在上，面板在下（可折叠）
+- Phaser `Scale.FIT` 模式，画布整数倍缩放
+- 基础分辨率：**480×320**
 - 触摸支持：双指缩放（Phase 2）
 
 ## 项目结构
 
 ```
 agent-space/
-├── index.html
+├── index.html                — 页面骨架：左 Canvas + 右面板
 ├── package.json
 ├── vite.config.js
 ├── DESIGN.md
 ├── README.md
 ├── src/
-│   ├── main.js              — Phaser 启动 + 场景注册
+│   ├── main.js              — Phaser 启动 + 面板初始化
 │   ├── config.js             — Bridge URL、轮询间隔、工位布局
 │   ├── scenes/
 │   │   ├── BootScene.js      — 资源加载 + loading bar
@@ -288,8 +315,9 @@ agent-space/
 │   ├── sprites/
 │   │   └── AgentSprite.js    — agent 角色（状态机、动画）
 │   ├── ui/
-│   │   ├── Bubble.js         — 像素对话气泡
-│   │   └── StatusBar.js      — 顶部状态栏（Bridge 连接状态、版本）
+│   │   ├── Bubble.js         — 像素对话气泡（Canvas 内）
+│   │   ├── AgentPanel.js     — 右侧 agent 状态列表（HTML）
+│   │   └── ChatLog.js        — 右侧对话日志（HTML）
 │   └── bridge/
 │       └── BridgeClient.js   — API 轮询 + 状态解析 + 错误重试
 ├── public/

@@ -1,112 +1,111 @@
 import Phaser from 'phaser';
-import config from '../config.js';
-import BridgeClient from '../bridge/BridgeClient.js';
-import AgentSprite from '../sprites/AgentSprite.js';
-import StatusBar from '../ui/StatusBar.js';
-import LogPanel from '../ui/LogPanel.js';
+import { AgentSprite } from '../sprites/AgentSprite.js';
 
-export default class OfficeScene extends Phaser.Scene {
-  constructor() {
-    super('Office');
-  }
+const TILE = 32;
+const COLS = 5;
+const ROWS = 2;
+const DESK_START_X = 2;  // tile offset
+const DESK_START_Y = 2;
+const DESK_SPACING_X = 3; // tiles between desks
+const DESK_SPACING_Y = 3;
+
+/**
+ * OfficeScene — procedurally generated pixel office with agent sprites.
+ */
+export class OfficeScene extends Phaser.Scene {
+  constructor() { super('Office'); }
 
   create() {
-    this.bridge = new BridgeClient();
-    this.agents = {};       // name → AgentSprite
-    this.slotPositions = []; // precomputed {x, y} per slot
-
-    this.drawOffice();
-    this.statusBar = new StatusBar(this, 4, 4);
-
-    // Initial fetch then poll
-    this.poll();
-    this.time.addEvent({
-      delay: config.pollInterval.health,
-      callback: () => this.poll(),
-      loop: true,
-    });
-
-    // Log panel (DOM-based, right side)
-    this.logPanel = new LogPanel();
+    this._drawOffice();
+    /** @type {Object<string, AgentSprite>} */
+    this.agents = {};
+    /** @type {Array<{x: number, y: number}>} desk center positions in px */
+    this.deskSlots = this._calcDeskSlots();
+    // Track last seen chat timestamps per agent
+    this._lastChatTs = {};
   }
 
-  drawOffice() {
-    const { cols, rows, tile } = { ...config.office, tile: config.tile };
-    const startX = 48;
-    const startY = 40;
-    const gapX = tile * 2.5;
-    const gapY = tile * 2.5;
+  _drawOffice() {
+    const mapW = COLS * DESK_SPACING_X + DESK_START_X + 2;
+    const mapH = ROWS * DESK_SPACING_Y + DESK_START_Y + 3;
 
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const x = startX + c * gapX;
-        const y = startY + r * gapY;
-        // Desk
-        this.add.rectangle(x, y, tile, tile * 0.6, 0x8b6914).setOrigin(0.5);
-        // Monitor
-        this.add.rectangle(x, y - tile * 0.3, tile * 0.5, tile * 0.35, 0x333355).setOrigin(0.5);
-        this.slotPositions.push({ x, y: y - tile * 0.1 });
+    // Floor
+    for (let y = 0; y < mapH; y++) {
+      for (let x = 0; x < mapW; x++) {
+        this.add.image(x * TILE + TILE / 2, y * TILE + TILE / 2, 'tile-floor');
       }
     }
-
-    // Title
-    this.add.text(config.gameWidth / 2, config.gameHeight - 12, 'Agent Space', {
-      fontSize: '10px', color: '#aaaacc', fontFamily: 'monospace',
-    }).setOrigin(0.5);
-  }
-
-  async poll() {
-    const [health, heartbeat] = await Promise.all([
-      this.bridge.getHealth(),
-      this.bridge.getHeartbeat(),
-    ]);
-
-    if (this.bridge.disconnected) {
-      this.statusBar.setDisconnected();
-      return;
+    // Walls (top row)
+    for (let x = 0; x < mapW; x++) {
+      this.add.image(x * TILE + TILE / 2, TILE / 2, 'tile-wall');
     }
-
-    if (health) {
-      this.statusBar.setConnected(health.version || '?');
-      this.updateAgents(health, heartbeat);
+    // Windows on top wall
+    for (let i = 0; i < COLS; i++) {
+      const wx = (DESK_START_X + i * DESK_SPACING_X) * TILE + TILE / 2;
+      this.add.image(wx, 6, 'tile-window');
     }
-  }
-
-  updateAgents(health, heartbeat) {
-    const snapshot = heartbeat?.snapshot?.agents || {};
-    const enabledAgents = (health.agents || []).filter(a => a.enabled);
-
-    // Track which agents are still present
-    const seen = new Set();
-
-    enabledAgents.forEach((agent, i) => {
-      if (i >= config.office.maxSlots) return;
-      const name = agent.name;
-      seen.add(name);
-
-      // Determine status
-      let status = 'offline';
-      if (agent.alive > 0 && agent.healthy) {
-        const snap = snapshot[name];
-        status = (snap && snap.busy > 0) ? 'busy' : 'idle';
-      } else if (agent.alive > 0 && !agent.healthy) {
-        status = 'error';
+    // Desks + monitors
+    for (let row = 0; row < ROWS; row++) {
+      for (let col = 0; col < COLS; col++) {
+        const dx = (DESK_START_X + col * DESK_SPACING_X) * TILE + TILE / 2;
+        const dy = (DESK_START_Y + row * DESK_SPACING_Y) * TILE + TILE / 2;
+        this.add.image(dx, dy - 10, 'tile-desk');
+        this.add.image(dx, dy - 18, 'tile-monitor-off').setData('slot', row * COLS + col);
       }
+    }
+    // Decorations: plants at bottom corners, coffee area center
+    const bottomY = (mapH - 1) * TILE + TILE / 2;
+    this.add.image(TILE * 2, bottomY, 'tile-plant');
+    this.add.image((mapW - 2) * TILE, bottomY, 'tile-plant');
+    this.add.text(mapW * TILE / 2, bottomY, '☕', { fontSize: '16px' }).setOrigin(0.5);
+  }
 
-      // Create or update sprite
+  _calcDeskSlots() {
+    const slots = [];
+    for (let row = 0; row < ROWS; row++) {
+      for (let col = 0; col < COLS; col++) {
+        const x = (DESK_START_X + col * DESK_SPACING_X) * TILE + TILE / 2;
+        const y = (DESK_START_Y + row * DESK_SPACING_Y) * TILE + TILE / 2 + 8;
+        slots.push({ x, y });
+      }
+    }
+    return slots;
+  }
+
+  /** Called by main.js on each BridgeClient update. */
+  updateFromBridge(client) {
+    const names = client.getAgentNames();
+
+    // Ensure sprites exist for each agent
+    names.forEach((name, i) => {
+      if (i >= this.deskSlots.length) return; // max 10
       if (!this.agents[name]) {
-        const pos = this.slotPositions[i];
-        this.agents[name] = new AgentSprite(this, pos.x, pos.y, name, status);
-      } else {
-        this.agents[name].setStatus(status);
+        const slot = this.deskSlots[i];
+        this.agents[name] = new AgentSprite(this, slot.x, slot.y, name);
       }
     });
 
-    // Remove agents no longer present
+    // Remove sprites for agents no longer present
     for (const name of Object.keys(this.agents)) {
-      if (!seen.has(name)) {
+      if (!names.includes(name)) {
         this.agents[name].destroy();
         delete this.agents[name];
+      }
+    }
+
+    // Update states
+    for (const name of names) {
+      if (!this.agents[name]) continue;
+      this.agents[name].setState(client.getAgentState(name));
+    }
+
+    // Chat bubbles — show new non-silent entries
+    const chats = client.getRecentChats(60);
+    for (const chat of chats) {
+      const prev = this._lastChatTs[chat.agent] || 0;
+      if (chat.ts > prev && this.agents[chat.agent]) {
+        this.agents[chat.agent].showBubble(chat.response || '');
+        this._lastChatTs[chat.agent] = chat.ts;
       }
     }
   }
