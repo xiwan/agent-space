@@ -2,10 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Agent Space</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { overflow-x: hidden; }
     body { background: #16213e; color: #e0e0e0; font-family: monospace; height: 100vh; display: flex; flex-direction: column; }
 
     #poll-bar { height: 3px; background: #333; flex-shrink: 0; }
@@ -27,6 +28,16 @@
     #setup label { display: block; font-size: 12px; color: #aaa; margin-bottom: 4px; }
     #setup input { width: 100%; padding: 8px; margin-bottom: 12px; background: #0f0f23; border: 1px solid #444; color: #e0e0e0; font-family: monospace; font-size: 13px; border-radius: 4px; }
     #setup button { width: 100%; padding: 8px; background: #4ade80; color: #000; border: none; font-family: monospace; font-weight: bold; font-size: 13px; cursor: pointer; border-radius: 4px; }
+
+    /* Agent info card (DOM overlay) */
+    #agent-info-card { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 300px; background: rgba(0,0,0,0.95); border: 2px solid #4a9eff; border-radius: 10px; padding: 16px; color: #fff; z-index: 1000; font-family: monospace; font-size: 13px; }
+    #agent-info-card h3 { font-size: 16px; font-weight: bold; margin-bottom: 8px; color: #4a9eff; }
+    #agent-info-card .close-btn { background: none; border: none; color: #fff; font-size: 20px; cursor: pointer; float: right; }
+    #agent-info-card .info-row { margin: 6px 0; display: flex; justify-content: space-between; }
+    #agent-info-card .info-label { color: #aaa; }
+    #agent-info-card .info-value { font-weight: bold; }
+    #agent-info-card #task-list { margin-top: 8px; padding-left: 16px; max-height: 80px; overflow-y: auto; }
+    #agent-info-card #task-list li { margin-bottom: 3px; }
   </style>
 </head>
 <body>
@@ -41,11 +52,112 @@
     </form>
   </div>
 
-  <div id="poll-bar"><div id="poll-bar-fill"></div></div>
-  <div id="chat-log">
-    <h3>💬 Agent Space — Chat Log</h3>
+  <div id="app-layout" style="display:flex; flex-direction:column; flex:1; overflow:hidden; width:100vw;">
+    <!-- 上半：Phaser 游戏画面 -->
+    <div id="game-container" style="height:50vh; min-height:0; background:#0d1117; flex-shrink:0; overflow:hidden;"></div>
+
+    <!-- 可拖动分割线 -->
+    <div id="divider" style="height:6px; background:#2a2a3e; cursor:row-resize; flex-shrink:0; border-top:1px solid #333; border-bottom:1px solid #333; display:flex; align-items:center; justify-content:center;">
+      <div style="width:40px; height:2px; background:#555; border-radius:1px;"></div>
+    </div>
+
+    <!-- 下半：heartbeat 日志 -->
+    <div id="right-panel" style="flex:1; display:flex; flex-direction:column; min-height:0; overflow:hidden;">
+      <div id="poll-bar"><div id="poll-bar-fill"></div></div>
+      <div id="chat-log" style="flex:1; overflow-y:auto; padding:10px;">
+        <h3>💬 Agent Space — Heartbeat Log</h3>
+      </div>
+    </div>
   </div>
 
+  <!-- Agent Info Card (DOM Overlay) -->
+  <div id="agent-info-card">
+    <button class="close-btn" onclick="window.hideAgentInfo()">×</button>
+    <h3 id="agent-card-name">Agent Name</h3>
+    <div class="info-row"><span class="info-label">Status:</span><span id="agent-card-status" class="info-value">-</span></div>
+    <div class="info-row"><span class="info-label">CB State:</span><span id="agent-card-cb" class="info-value">-</span></div>
+    <div class="info-row"><span class="info-label">Success Rate:</span><span id="agent-card-success" class="info-value">-</span></div>
+    <div class="info-row"><span class="info-label">Avg Latency:</span><span id="agent-card-latency" class="info-value">-</span></div>
+    <h4 style="margin-top:8px; color:#aaa; font-size:12px;">Recent Tasks</h4>
+    <ul id="task-list" style="padding-left:20px; margin-top:4px; font-size:11px;">
+      <li id="task-1">-</li>
+      <li id="task-2">-</li>
+      <li id="task-3">-</li>
+    </ul>
+  </div>
+
+  <script>
+    //Agent info card methods exposed globally for onclick handler
+    window._currentAgentInfo = null;
+    window.showAgentInfo = function(agentName, data) {
+      window._currentAgentInfo = { name: agentName, data: data };
+      const card = document.getElementById('agent-info-card');
+      document.getElementById('agent-card-name').textContent = agentName;
+      document.getElementById('agent-card-status').textContent = data.status || 'idle';
+      document.getElementById('agent-card-cb').textContent = data.cbState || 'CLOSED';
+      document.getElementById('agent-card-success').textContent = data.successRate || '94.2%';
+      document.getElementById('agent-card-latency').textContent = data.latency || '1.2s';
+      const tasks = data.tasks || [];
+      for (let i = 1; i <= 3; i++) {
+        const li = document.getElementById('task-' + i);
+        li.textContent = tasks[i - 1] || '-';
+      }
+      card.style.display = 'block';
+    };
+    window.hideAgentInfo = function() {
+      document.getElementById('agent-info-card').style.display = 'none';
+      window._currentAgentInfo = null;
+    };
+  </script>
+
+  <script>
+    // 可拖动分割线逻辑
+    (function() {
+      const divider = document.getElementById('divider');
+      const gameContainer = document.getElementById('game-container');
+      let dragging = false, startY = 0, startH = 0;
+
+      divider.addEventListener('mousedown', e => {
+        dragging = true;
+        startY = e.clientY;
+        startH = gameContainer.getBoundingClientRect().height;
+        document.body.style.cursor = 'row-resize';
+        document.body.style.userSelect = 'none';
+      });
+      divider.addEventListener('touchstart', e => {
+        dragging = true;
+        startY = e.touches[0].clientY;
+        startH = gameContainer.getBoundingClientRect().height;
+      }, { passive: true });
+
+      document.addEventListener('mousemove', e => {
+        if (!dragging) return;
+        const delta = e.clientY - startY;
+        const newH = Math.max(120, Math.min(window.innerHeight - 120, startH + delta));
+        gameContainer.style.height = newH + 'px';
+      });
+      document.addEventListener('touchmove', e => {
+        if (!dragging) return;
+        e.preventDefault();
+        const delta = e.touches[0].clientY - startY;
+        const newH = Math.max(120, Math.min(window.innerHeight - 120, startH + delta));
+        gameContainer.style.height = newH + 'px';
+      }, { passive: false });
+
+      document.addEventListener('mouseup', () => {
+        dragging = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        window.dispatchEvent(new Event('resize'));
+      });
+      document.addEventListener('touchend', () => {
+        dragging = false;
+        window.dispatchEvent(new Event('resize'));
+      });
+    })();
+  </script>
+
   <script type="module" src="/src/main.js"></script>
+  <script type="module" src="/src/game.js"></script>
 </body>
 </html>

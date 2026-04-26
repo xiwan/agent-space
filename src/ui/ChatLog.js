@@ -11,7 +11,7 @@ export class ChatLog {
     if (!newChats.length) return;
     this._lastTs = Math.max(...chats.map(c => c.ts));
 
-    for (const chat of newChats.sort((a, b) => b.ts - a.ts)) {
+    for (const chat of newChats.sort((a, b) => a.ts - b.ts)) {
       const div = document.createElement('div');
       div.className = 'chat-entry';
       const time = new Date(chat.ts * 1000).toLocaleTimeString();
@@ -21,12 +21,15 @@ export class ChatLog {
         <span class="chat-agent">${chat.agent}</span>
         <div class="chat-text">${this._escape(text)}</div>
       `;
-      this.el.insertBefore(div, this.el.querySelector('.chat-entry'));
+      this.el.appendChild(div);
     }
 
-    // Trim old entries
+    // Trim old entries from top
     const entries = this.el.querySelectorAll('.chat-entry');
-    for (let i = 50; i < entries.length; i++) entries[i].remove();
+    for (let i = 0; i < entries.length - 50; i++) entries[i].remove();
+
+    // Auto-scroll to bottom
+    this.el.scrollTop = this.el.scrollHeight;
   }
 
   _escape(s) {

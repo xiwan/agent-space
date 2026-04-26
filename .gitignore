@@ -1,9 +1,14 @@
 node_modules/
 dist/
 .DS_Store
+nohup.out
 
 # AIDLC local files
 OPERATIONS.md
 versions/
 design/
 scratch/
+
+# External agent notes
+QWEN.md
+heartbeat_review.md
