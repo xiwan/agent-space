@@ -21,6 +21,12 @@ export default defineConfig({
             proxyReq.removeHeader('x-forwarded-proto');
             proxyReq.removeHeader('x-forwarded-host');
           });
+          proxy.on('error', (err, req, res) => {
+            console.warn('[proxy] error:', err.message);
+            if (res.headersSent) return;
+            res.writeHead(502, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'proxy_error' }));
+          });
         },
       },
     },

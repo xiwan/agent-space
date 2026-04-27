@@ -1,253 +1,197 @@
 /**
- * AgentSprite.js — Phaser3 像素 agent 小人，封装 idle/busy/error 状态动画
- * 用法：new AgentSprite(scene, name, x, y)
+ * AgentSprite — PNG sprite 动画 + zone walking
+ *
+ * 核心方法:
+ *   walkTo(x, y, status) — 播放 walk 动画移动到目标位置，到达后切换状态动画
+ *   updateStatus(status)  — 原地切换状态（error/offline 等不需要移动的场景）
  */
 
-const COLORS = {
-  idle:    0x48bb78,   // 绿
-  busy:    0xf6ad55,   // 橙
-  error:   0xf56565,   // 红
-  offline: 0x718096,   // 灰
+const STATUS_COLORS = {
+  idle: 0x48bb78, busy: 0xf6ad55, error: 0xf56565, offline: 0x718096,
 };
 
-// 小人各部位偏移（相对于 sprite 锚点）
-const BODY = { w: 14, h: 18, ox: -7,  oy: -18 };
-const HEAD = { r: 7,         ox:  0,  oy: -30 };
-const DOT  = { r: 4,         ox:  14, oy: -34 }; // 右上角状态点
-
 export class AgentSprite {
-  /**
-   * @param {Phaser.Scene} scene
-   * @param {string} name  - agent 名称
-   * @param {number} x
-   * @param {number} y
-   */
   constructor(scene, name, x, y) {
-    this.scene  = scene;
-    this.name   = name;
-    this.x      = x;
-    this.y      = y;
+    this.scene = scene;
+    this.name = name;
     this.status = 'offline';
-    this._tween = null;
+    this._walkTween = null;
+    this._idleTimer = null;
 
-    // --- 绘制容器 ---
     this.container = scene.add.container(x, y);
+    this._updateDepth();
 
-    // 工位桌（静态背景，不随状态变化）
-    const desk = scene.add.graphics();
-    desk.fillStyle(0x4a5568);
-    desk.fillRoundedRect(-38, -22, 76, 60, 8);
-    this.container.add(desk);
+    // sprite
+    this._sprite = scene.add.sprite(0, 0, name, 0)
+      .setOrigin(0.5, 1).setScale(2);
+    this.container.add(this._sprite);
 
-    // 身体方块
-    this._body = scene.add.graphics();
-    this.container.add(this._body);
-
-    // 头部圆
-    this._head = scene.add.graphics();
-    this.container.add(this._head);
-
-    // 状态圆点（右上角）
-    this._dot = scene.add.graphics();
-    this.container.add(this._dot);
-
-    // 名字标签 + 状态文字
-    this._label = scene.add.text(0, 16, '', {
-      fontSize: '11px',
-      color: '#e2e8f0',
-      fontFamily: 'monospace',
-      backgroundColor: '#00000055',
-      padding: { x: 3, y: 1 },
-    }).setOrigin(0.5, 0);
+    // label (name + dot inline)
+    this._label = scene.add.text(0, -105, '', {
+      fontSize: '11px', color: '#e2e8f0', fontFamily: 'monospace',
+      backgroundColor: '#00000055', padding: { x: 3, y: 1 },
+    }).setOrigin(0.5, 1);
     this.container.add(this._label);
 
-    // 初始渲染
-    this._draw(COLORS.offline);
+    // init
     this._updateLabel('offline');
+    this._playAnim('offline');
+    this.container.setAlpha(0.45);
 
-    // -- interactive setup --
-    // 添加互动区域(circle invisible)用于处理pointer事件，避免影响内部graphics绘制
-    this.interactiveArea = scene.add.circle(x, y - 20, 25, 0x000000, 0)
+    // interaction
+    this._hitArea = scene.add.circle(0, -50, 45, 0x000000, 0)
       .setInteractive({ useHandCursor: true });
-    this.container.add(this.interactiveArea);
+    this.container.add(this._hitArea);
 
-    // 点击显示信息卡
-    this.interactiveArea.on('pointerdown', (pointer) => {
-      pointer.event.stopPropagation(); // 防止触发拖动
-      if (this.scene && this.scene.showAgentInfo) {
-        this.scene.showAgentInfo(this.name, {
-          status: this.status,
-          cbState: 'CLOSED', // TODO: 从 dataManager 获取真实 CB 状态
-          successRate: '94.2%',
-          latency: '1.2s',
-          tasks: ['Task 1', 'Task 2', 'Task 3']
-        });
-      }
+    this._hitArea.on('pointerdown', (p) => {
+      p.event.stopPropagation();
+      this.scene?.showAgentInfo?.(this.name, {
+        status: this.status, cbState: 'CLOSED',
+        successRate: '94.2%', latency: '1.2s',
+        tasks: ['Task 1', 'Task 2', 'Task 3'],
+      });
     });
-
-    // hover 效果
-    this.interactiveArea.on('pointerover', () => {
-      if (this.status !== 'offline') {
-        this.container.setScale(1.1);
-        this.container.setDepth(100);
-      }
+    this._hitArea.on('pointerover', () => {
+      if (this.status !== 'offline') this.container.setScale(1.1);
     });
+    this._hitArea.on('pointerout', () => this.container.setScale(1));
+  }
 
-    this.interactiveArea.on('pointerout', () => {
-      this.container.setScale(1);
-      this.container.setDepth(0);
+  /** 走到目标位置后切换状态 */
+  walkTo(targetX, targetY, newStatus) {
+    if (this.status === newStatus &&
+        Math.abs(this.container.x - targetX) < 5 &&
+        Math.abs(this.container.y - targetY) < 5) return;
+
+    this._stopMovement();
+
+    const dx = targetX - this.container.x;
+    const dy = targetY - this.container.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist < 10) {
+      // 已经在目标位置附近，直接切换
+      this.updateStatus(newStatus);
+      return;
+    }
+
+    // 朝向
+    this._sprite.setFlipX(dx < 0);
+
+    // walk 动画
+    const walkKey = `${this.name}_walk`;
+    if (this.scene.anims.exists(walkKey)) this._sprite.play(walkKey);
+
+    // 移动中先设置为非 offline 透明度
+    this.container.setAlpha(1);
+
+    this._walkTween = this.scene.tweens.add({
+      targets: this.container,
+      x: targetX,
+      y: targetY,
+      duration: dist * 10, // ~10ms per pixel
+      ease: 'Linear',
+      onUpdate: () => this._updateDepth(),
+      onComplete: () => {
+        this._walkTween = null;
+        this._sprite.setFlipX(false);
+        this.updateStatus(newStatus);
+      },
     });
   }
 
-  // ─── 公开 API ────────────────────────────────────────────────
-
-  /** 更新状态并触发对应动画 */
+  /** 原地切换状态 */
   updateStatus(status) {
     if (this.status === status) return;
     this.status = status;
 
-    const color = COLORS[status] ?? COLORS.offline;
-    this._draw(color);
-    this._stopTween();
     this._updateLabel(status);
+    this._stopIdleBehavior();
+    this.container.setAlpha(status === 'offline' ? 0.45 : 1);
 
-    switch (status) {
-      case 'busy':    this._animBusy();    break;
-      case 'idle':    this._animIdle();    break;
-      case 'error':   this._animError();   break;
-      case 'offline': this._animOffline(); break;
+    if (status === 'idle') {
+      this._startIdleBehavior();
+    } else {
+      this._playAnim(status);
     }
   }
 
-  /** 销毁（从场景移除） */
   destroy() {
-    this._stopTween();
-    if (this.interactiveArea) {
-      this.interactiveArea.destroy();
-    }
+    this._stopMovement();
+    this._hitArea?.destroy();
     this.container.destroy();
   }
 
-  // ─── 内部绘制 ────────────────────────────────────────────────
+  // --- idle 漫步行为 ---
 
-  _draw(color) {
-    // 身体
-    this._body.clear();
-    this._body.fillStyle(color);
-    this._body.fillRect(BODY.ox, BODY.oy, BODY.w, BODY.h);
-
-    // 头（比身体亮一点）
-    this._head.clear();
-    this._head.fillStyle(color, 1);
-    this._head.fillCircle(HEAD.ox, HEAD.oy, HEAD.r);
-    // 高光
-    this._head.fillStyle(0xffffff, 0.15);
-    this._head.fillCircle(HEAD.ox - 2, HEAD.oy - 2, 3);
-
-    // 状态点
-    this._dot.clear();
-    this._dot.fillStyle(color);
-    this._dot.fillCircle(DOT.ox, DOT.oy, DOT.r);
-    // 状态点描边
-    this._dot.lineStyle(1.5, 0x0d1117);
-    this._dot.strokeCircle(DOT.ox, DOT.oy, DOT.r);
+  _startIdleBehavior() {
+    this._idleHomeX = this.container.x;
+    this._idleHomeY = this.container.y;
+    this._playAnim('idle');
+    this._scheduleWander();
   }
 
-  /** 更新标签文字 */
+  _scheduleWander() {
+    this._idleTimer = this.scene.time.delayedCall(3000 + Math.random() * 3000, () => {
+      if (this.status !== 'idle') return;
+      this._doWander();
+    });
+  }
+
+  _doWander() {
+    // 在 slot 附近 ±1.5 tiles 范围内漫步
+    const TS = this.scene._tileScaled || 96;
+    const range = TS * (0.8 + Math.random() * 0.7);
+    const dir = Math.random() < 0.5 ? -1 : 1;
+    const targetX = this._idleHomeX + dir * range;
+
+    this._sprite.setFlipX(targetX < this.container.x);
+
+    const walkKey = `${this.name}_walk`;
+    if (this.scene.anims.exists(walkKey)) this._sprite.play(walkKey);
+
+    const dist = Math.abs(targetX - this.container.x);
+    this._walkTween = this.scene.tweens.add({
+      targets: this.container,
+      x: targetX,
+      duration: dist * 10,
+      ease: 'Linear',
+      onUpdate: () => this._updateDepth(),
+      onComplete: () => {
+        this._walkTween = null;
+        if (this.status !== 'idle') return;
+        this._sprite.setFlipX(false);
+        this._playAnim('idle');
+        this._scheduleWander();
+      },
+    });
+  }
+
+  _stopIdleBehavior() {
+    if (this._idleTimer) { this._idleTimer.remove(false); this._idleTimer = null; }
+  }
+
+  _stopMovement() {
+    this._stopIdleBehavior();
+    if (this._walkTween) { this._walkTween.stop(); this._walkTween = null; }
+    this._sprite.setFlipX(false);
+  }
+
+  // --- helpers ---
+
+  _updateDepth() {
+    const ts = this.scene._tileScaled;
+    if (ts) this.container.setDepth(Math.floor(this.container.y / ts * 10));
+  }
+
+  _playAnim(status) {
+    const key = `${this.name}_${status}`;
+    if (this.scene.anims.exists(key)) this._sprite.play(key);
+  }
+
   _updateLabel(status) {
-    const statusText = status === 'offline' ? '' : ` - ${status}`;
-    this._label.setText(`${this.name}${statusText}`);
-  }
-
-  // ─── 动画 ────────────────────────────────────────────────────
-
-  /** busy：左右抖动，循环 */
-  _animBusy() {
-    this._tween = this.scene.tweens.add({
-      targets:  this.container,
-      x:        this.x + 2,
-      yoyo:     true,
-      repeat:   -1,          // 无限循环
-      duration: 80,
-      ease:     'Linear',
-    });
-  }
-
-  /** idle：轻微上下浮动，循环 */
-  _animIdle() {
-    this._tween = this.scene.tweens.add({
-      targets:  this.container,
-      y:        this.y - 3,
-      yoyo:     true,
-      repeat:   -1,
-      duration: 900,
-      ease:     'Sine.easeInOut',
-    });
-  }
-
-  /** error：剧烈抖动 + 脉动缩放，提示异常 */
-  _animError() {
-    // 位置抖动
-    const shake = this.scene.tweens.add({
-      targets:  this.container,
-      x:        this.x + 3,
-      yoyo:     true,
-      repeat:   -1,
-      duration: 60,
-      ease:     'Linear',
-    });
-
-    // 缩放脉动
-    const pulse = this.scene.tweens.add({
-      targets:  this.container,
-      scaleX:   1.1,
-      scaleY:   1.1,
-      yoyo:     true,
-      repeat:   -1,
-      duration: 200,
-      ease:     'Sine.easeInOut',
-    });
-
-    // 用数组存储，方便 _stopTween 统一处理
-    this._tween = [shake, pulse];
-  }
-
-  /** offline：淡出至半透明 */
-  _animOffline() {
-    this.container.x = this.x;  // 复位
-    this.container.y = this.y;
-    
-    // 取消可能存在的缩放
-    this.container.scaleX = 1;
-    this.container.scaleY = 1;
-    
-    this._tween = this.scene.tweens.add({
-      targets:  this.container,
-      alpha:    0.45,
-      duration: 400,
-      ease:     'Power1',
-    });
-  }
-
-  _stopTween() {
-    if (this._tween) {
-      if (Array.isArray(this._tween)) {
-        // error 状态有多个 tween（shake + pulse）
-        this._tween.forEach(t => {
-          this.scene.tweens.remove(t);
-          t.stop();
-        });
-      } else {
-        this.scene.tweens.remove(this._tween);
-        this._tween.stop();
-      }
-      this._tween = null;
-    }
-    // 复位位置、透明度和缩放
-    this.container.x       = this.x;
-    this.container.y       = this.y;
-    this.container.alpha   = 1;
-    this.container.scaleX  = 1;
-    this.container.scaleY  = 1;
+    const dot = { idle: '🟢', busy: '🟠', error: '🔴', offline: '⚫' }[status] || '⚫';
+    const text = status === 'offline' ? this.name : `${this.name} — ${status}`;
+    this._label.setText(`${dot} ${text}`);
   }
 }

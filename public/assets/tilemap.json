@@ -1,0 +1,170 @@
+{
+  "tileSize": 32,
+  "scale": 3,
+  "size": { "cols": 18, "rows": 10 },
+
+  "tileset": {
+    "key": "tileset_all",
+    "file": "assets/tileset_all.png"
+  },
+
+  "sprites": {
+    "room_bookshelf":    "assets/room/bookshelf.png",
+    "room_plant1":       "assets/room/plant1.png",
+    "room_plant2":       "assets/room/plant2.png",
+    "room_plant3":       "assets/room/plant3.png",
+    "room_frame":        "assets/room/frame.png",
+    "room_armchair1":    "assets/room/armchair1.png",
+    "room_sofa":         "assets/room/sofa.png",
+    "room_armchair2":    "assets/room/armchair2.png",
+    "room_tv":           "assets/room/tv.png",
+    "room_table":        "assets/room/table.png",
+    "room_lamp":         "assets/room/lamp.png",
+    "room_rug":          "assets/room/rug.png",
+    "room_floor_lamp":   "assets/room/floor_lamp.png",
+    "room_carpet":       "assets/room/carpet.png",
+    "room_shelf":        "assets/room/shelf.png",
+    "room_lsofa_back":   "assets/room/lsofa_back.png",
+    "room_lsofa_seat":   "assets/room/lsofa_seat.png",
+    "desk_desk":         "assets/desk/desk.png",
+    "desk_monitor":      "assets/desk/monitor.png",
+    "desk_keyboard":     "assets/desk/keyboard.png",
+    "desk_mug":          "assets/desk/mug.png",
+    "desk_penholder":    "assets/desk/penholder.png",
+    "desk_papers":       "assets/desk/papers.png",
+    "desk_phone":        "assets/desk/phone.png",
+    "desk_sticky_note":  "assets/desk/sticky_note.png",
+    "desk_pen":          "assets/desk/pen.png",
+    "desk_extinguisher": "assets/desk/extinguisher.png",
+    "desk_whiteboard":   "assets/desk/whiteboard.png",
+    "desk_door":         "assets/desk/door.png"
+  },
+
+  "legend": {
+    "P": 17, "L": 16,
+    "F": 6,  "R": 2
+  },
+
+  "ground": [
+    "PPPPPPPPPPPPPPPPPP",
+    "PPPPPPPPPPPPPPPPPP",
+    "LLLLLLLLLLLLLLLLLL",
+    "FFFFFFFFRRRRRRRRRR",
+    "FFFFFFFFRRRRRRRRRR",
+    "FFFFFFFFRRRRRRRRRR",
+    "FFFFFFFFRRRRRRRRRR",
+    "FFFFFFFFRRRRRRRRRR",
+    "FFFFFFFFRRRRRRRRRR",
+    "FFFFFFFFRRRRRRRRRR"
+  ],
+
+  "furniture_objects": [
+    {"_comment": "=== OFFICE WALL ==="},
+    { "id": "desk_whiteboard",   "col": 0.5,  "row": 1 },
+    { "id": "desk_sticky_note",  "col": 2.5,  "row": 1.5 },
+    { "id": "desk_sticky_note",  "col": 3.1,  "row": 1.5 },
+    { "id": "desk_door",         "col": 4,    "row": 1 },
+    { "id": "desk_extinguisher", "col": 6,    "row": 1.3 },
+    { "id": "desk_whiteboard",   "col": 6.8,  "row": 1 },
+
+    {"_comment": "=== OFFICE ROW 1: monitor above desk (-0.7 row), items on desk ==="},
+    { "id": "desk_desk",     "col": 0.5, "row": 4 },
+    { "id": "desk_monitor",  "col": 0.5, "row": 3.3 },
+    { "id": "desk_keyboard", "col": 0.5, "row": 4 },
+    { "id": "desk_mug",      "col": 0.5, "row": 4 },
+
+    { "id": "desk_desk",     "col": 3,   "row": 4 },
+    { "id": "desk_monitor",  "col": 3,   "row": 3.3 },
+    { "id": "desk_keyboard", "col": 3,   "row": 4 },
+    { "id": "desk_penholder","col": 3,   "row": 4 },
+
+    { "id": "desk_desk",     "col": 5.5, "row": 4 },
+    { "id": "desk_monitor",  "col": 5.5, "row": 3.3 },
+    { "id": "desk_keyboard", "col": 5.5, "row": 4 },
+    { "id": "desk_papers",   "col": 5.5, "row": 4 },
+
+    {"_comment": "=== OFFICE ROW 2 ==="},
+    { "id": "desk_desk",     "col": 0.5, "row": 7 },
+    { "id": "desk_monitor",  "col": 0.5, "row": 6.3 },
+    { "id": "desk_keyboard", "col": 0.5, "row": 7 },
+    { "id": "desk_phone",    "col": 0.5, "row": 7 },
+
+    { "id": "desk_desk",     "col": 3,   "row": 7 },
+    { "id": "desk_monitor",  "col": 3,   "row": 6.3 },
+    { "id": "desk_keyboard", "col": 3,   "row": 7 },
+    { "id": "desk_mug",      "col": 3,   "row": 7 },
+
+    { "id": "desk_desk",     "col": 5.5, "row": 7 },
+    { "id": "desk_monitor",  "col": 5.5, "row": 6.3 },
+    { "id": "desk_keyboard", "col": 5.5, "row": 7 },
+    { "id": "desk_pen",      "col": 5.5, "row": 7 },
+
+    {"_comment": "=== LIVING WALL (tight) ==="},
+    { "id": "room_bookshelf",  "col": 8.3,  "row": 2 },
+    { "id": "room_shelf",      "col": 10,   "row": 2.3 },
+    { "id": "room_frame",      "col": 11.2, "row": 1.5 },
+    { "id": "room_tv",         "col": 12.2, "row": 2.5 },
+    { "id": "room_plant3",     "col": 13.2, "row": 2 },
+    { "id": "room_frame",      "col": 14,   "row": 1.5 },
+    { "id": "room_shelf",      "col": 15,   "row": 2.3 },
+    { "id": "room_bookshelf",  "col": 16.5, "row": 2 },
+    { "id": "room_plant1",     "col": 8,    "row": 2.5 },
+    { "id": "room_plant2",     "col": 17.5, "row": 2.5 },
+
+    {"_comment": "=== LIVING FURNITURE (compact cluster) ==="},
+    { "id": "room_carpet",      "col": 10,   "row": 4.2 },
+    { "id": "room_floor_lamp",  "col": 8.5,  "row": 3.5 },
+    { "id": "room_armchair1",   "col": 9.5,  "row": 4.5 },
+    { "id": "room_sofa",        "col": 11.5, "row": 4.5 },
+    { "id": "room_armchair2",   "col": 15,   "row": 4.5 },
+    { "id": "room_floor_lamp",  "col": 16.8, "row": 3.5, "flipX": true },
+    { "id": "room_lamp",        "col": 11,   "row": 5.5 },
+    { "id": "room_table",       "col": 12,   "row": 5.8 },
+    { "id": "room_rug",         "col": 12,   "row": 7 },
+    { "id": "room_lsofa_back",  "col": 16.2, "row": 6 },
+    { "id": "room_lsofa_seat",  "col": 14.5, "row": 6 },
+    { "id": "room_plant1",      "col": 8.5,  "row": 8.5 },
+    { "id": "room_plant3",      "col": 17,   "row": 8.5 }
+  ],
+
+  "zones": {
+    "office": {
+      "bounds": { "colStart": 0, "colEnd": 7, "rowStart": 3, "rowEnd": 9 },
+      "slots": [
+        { "id": "desk_0", "col": 1.2, "row": 5.2 },
+        { "id": "desk_1", "col": 3.7, "row": 5.2 },
+        { "id": "desk_2", "col": 6.2, "row": 5.2 },
+        { "id": "desk_3", "col": 1.2, "row": 8.2 },
+        { "id": "desk_4", "col": 3.7, "row": 8.2 },
+        { "id": "desk_5", "col": 6.2, "row": 8.2 }
+      ]
+    },
+    "living": {
+      "bounds": { "colStart": 8, "colEnd": 17, "rowStart": 3, "rowEnd": 9 },
+      "slots": [
+        { "id": "sofa_front",  "col": 12.5, "row": 5.8 },
+        { "id": "chair_left",  "col": 10,   "row": 5.8 },
+        { "id": "chair_right", "col": 15.5, "row": 5.8 },
+        { "id": "by_table",    "col": 12.5, "row": 7.5 },
+        { "id": "by_lamp",     "col": 9.5,  "row": 7.5 },
+        { "id": "by_plant",    "col": 16,   "row": 7.5 }
+      ]
+    }
+  },
+
+  "statusToZone": {
+    "busy":    "office",
+    "idle":    "living",
+    "error":   null,
+    "offline": null
+  },
+
+  "agentSlots": {
+    "claude":   { "office": "desk_0", "living": "sofa_front" },
+    "qwen":     { "office": "desk_1", "living": "chair_left" },
+    "opencode": { "office": "desk_2", "living": "chair_right" },
+    "hermes":   { "office": "desk_3", "living": "by_lamp" },
+    "harness":  { "office": "desk_4", "living": "by_table" },
+    "kiro":     { "office": "desk_5", "living": "by_plant" }
+  }
+}

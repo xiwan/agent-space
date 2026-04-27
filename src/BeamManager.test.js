@@ -318,6 +318,7 @@ describe('BeamManager', () => {
   describe('T5', () => {
     it('should skip sendBeamFn when mock agents count < 2', () => {
       const sendBeamFn = vi.fn()
+      fetchMock.mockResolvedValue({ ok: false, status: 404, json: () => Promise.resolve({}) })
       const beamManager = new BeamManager(scene, sendBeamFn)
       beamManager._mode = 'mock'
 

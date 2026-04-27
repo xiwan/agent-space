@@ -1,54 +1,71 @@
 /**
- * BootScene — 预生成纹理，然后跳转 OfficeScene
- * 用 Graphics 绘制占位符像素纹理，无需外部图片资源
+ * BootScene — 数据驱动资产加载
+ *
+ * 加载流程:
+ *   1. preload: 加载 tilemap.json + atlas.json (元数据)
+ *   2. create:  读取元数据 → 动态加载 tileset、sprites、spritesheets → 注册动画 → 启动 OfficeScene
+ *
+ * 所有资产路径来自 tilemap.json.sprites 和 tilemap.json.tileset，
+ * 换场景只需换 tilemap.json，代码不用改。
  */
 import * as Phaser from 'phaser';
+
+const FRAME = 64;
+const STATE_ANIM = { idle: 'idle', busy: 'talk', error: 'damage', offline: 'wait' };
 
 export class BootScene extends Phaser.Scene {
   constructor() { super({ key: 'BootScene' }); }
 
+  preload() {
+    this.load.json('atlas', 'assets/atlas.json');
+    this.load.json('tilemap', 'assets/tilemap.json');
+  }
+
   create() {
-    const T = 32; // tile size
+    const tm = this.cache.json.get('tilemap');
+    const atlas = this.cache.json.get('atlas');
 
-    // 地板砖
-    const floor = this.make.graphics({ x: 0, y: 0, add: false });
-    floor.fillStyle(0x1a1a2e);
-    floor.fillRect(0, 0, T, T);
-    floor.lineStyle(1, 0x2a2a4e, 1);
-    floor.strokeRect(0, 0, T, T);
-    floor.generateTexture('tile_floor', T, T);
-    floor.destroy();
+    // 1. tileset
+    this.load.image(tm.tileset.key, tm.tileset.file);
 
-    // 工位桌
-    const desk = this.make.graphics({ x: 0, y: 0, add: false });
-    desk.fillStyle(0x4a3728);
-    desk.fillRect(2, 8, 28, 20);
-    desk.fillStyle(0x2c5f2e);    // 显示器
-    desk.fillRect(8, 2, 16, 12);
-    desk.generateTexture('desk', T, T);
-    desk.destroy();
+    // 2. furniture sprites — 从 tilemap.sprites 动态加载
+    for (const [key, file] of Object.entries(tm.sprites || {})) {
+      this.load.image(key, file);
+    }
 
-    // Agent 待机
-    const idle = this.make.graphics({ x: 0, y: 0, add: false });
-    idle.fillStyle(0x4fc3f7);
-    idle.fillCircle(16, 10, 8);  // 头
-    idle.fillStyle(0x29b6f6);
-    idle.fillRect(10, 20, 12, 16); // 身体
-    idle.generateTexture('agent_idle', T, T + 4);
-    idle.destroy();
+    // 3. agent spritesheets — 从 atlas.json 动态加载
+    for (const name of Object.keys(atlas)) {
+      this.load.spritesheet(name, `assets/${name}.png`, {
+        frameWidth: FRAME, frameHeight: FRAME,
+      });
+    }
 
-    // Agent 忙碌（橙色高亮）
-    const busy = this.make.graphics({ x: 0, y: 0, add: false });
-    busy.fillStyle(0xf39c12);
-    busy.fillCircle(16, 10, 8);
-    busy.fillStyle(0xe67e22);
-    busy.fillRect(10, 20, 12, 16);
-    // 忙碌标记 ●
-    busy.fillStyle(0xff4444);
-    busy.fillCircle(26, 4, 4);
-    busy.generateTexture('agent_busy', T, T + 4);
-    busy.destroy();
+    this.load.once('complete', () => {
+      // 注册 agent 动画
+      for (const [name, meta] of Object.entries(atlas)) {
+        for (const [state, animKey] of Object.entries(STATE_ANIM)) {
+          const anim = meta.anims?.[animKey];
+          if (!anim) continue;
+          this.anims.create({
+            key: `${name}_${state}`,
+            frames: this.anims.generateFrameNumbers(name, { start: anim.start, end: anim.end }),
+            frameRate: state === 'error' ? 4 : 8,
+            repeat: -1,
+          });
+        }
+        const walk = meta.anims?.walk;
+        if (walk) {
+          this.anims.create({
+            key: `${name}_walk`,
+            frames: this.anims.generateFrameNumbers(name, { start: walk.start, end: walk.end }),
+            frameRate: 10,
+            repeat: -1,
+          });
+        }
+      }
+      this.scene.start('OfficeScene');
+    });
 
-    this.scene.start('OfficeScene');
+    this.load.start();
   }
 }
