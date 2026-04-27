@@ -17,7 +17,7 @@ export class BootScene extends Phaser.Scene {
   constructor() { super({ key: 'BootScene' }); }
 
   preload() {
-    this.load.json('atlas', 'assets/atlas.json');
+    this.load.json('atlas', 'assets/agents/atlas.json');
     this.load.json('tilemap', 'assets/tilemap.json');
   }
 
@@ -35,7 +35,7 @@ export class BootScene extends Phaser.Scene {
 
     // 3. agent spritesheets — 从 atlas.json 动态加载
     for (const name of Object.keys(atlas)) {
-      this.load.spritesheet(name, `assets/${name}.png`, {
+      this.load.spritesheet(name, `assets/agents/${name}.png`, {
         frameWidth: FRAME, frameHeight: FRAME,
       });
     }

@@ -42,10 +42,36 @@ function boot(cfg) {
   async function pollLogs() {
     try {
       const data = await client._fetch('/heartbeat/logs');
-      if (data) chatLog.updateFromLogs(data.logs || []);
+      if (data?.error) {
+        chatLog.el.querySelector('.chat-status')?.remove();
+        const s = document.createElement('div');
+        s.className = 'chat-status';
+        s.style.cssText = 'color:#f56565;font-size:11px;padding:4px 0;';
+        s.textContent = `⚠ ${data.error}`;
+        chatLog.el.prepend(s);
+      } else if (data) {
+        chatLog.el.querySelector('.chat-status')?.remove();
+        chatLog.updateFromLogs(data.logs || []);
+      }
     } catch {}
     resetBar();
   }
   pollLogs();
   setInterval(pollLogs, 30000);
+
+  // Heartbeat interval selector
+  const hbSelect = document.getElementById('hb-interval');
+  hbSelect.addEventListener('change', async () => {
+    const val = parseInt(hbSelect.value);
+    try {
+      await fetch('/api/heartbeat/interval', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interval: val }),
+      });
+      console.log(`[heartbeat] interval → ${val}s`);
+    } catch (e) {
+      console.warn('[heartbeat] interval change failed:', e.message);
+    }
+  });
 }
