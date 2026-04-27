@@ -2,9 +2,10 @@
 
 Pixel-art AI Agent office — real-time visualization of ACP Bridge agents.
 
-Upper half: Phaser 4 pixel office with agent sprites (idle/busy/error/offline animations).
-Lower half: heartbeat chat log with auto-scroll.
-Draggable divider between panels. Minimap + camera controls (drag, pinch-zoom, scroll-wheel).
+![Agent Space](public/test001.png)
+
+Dual-zone layout: Office (left) + Living Room (right). Agents walk to office when busy, relax in living room when idle.
+Responsive: side-by-side on desktop, stacked on mobile. Draggable divider between panels.
 
 ## Quick Start
 
