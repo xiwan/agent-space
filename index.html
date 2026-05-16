@@ -47,12 +47,14 @@
     #setup button { width: 100%; padding: 8px; background: #4ade80; color: #000; border: none; font-family: monospace; font-weight: bold; font-size: 13px; cursor: pointer; border-radius: 4px; }
 
     /* Agent info card (DOM overlay) */
-    #agent-info-card { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 300px; background: rgba(0,0,0,0.95); border: 2px solid #4a9eff; border-radius: 10px; padding: 16px; color: #fff; z-index: 1000; font-family: monospace; font-size: 13px; }
+    #agent-info-card { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 320px; background: rgba(0,0,0,0.95); border: 2px solid #4a9eff; border-radius: 10px; padding: 16px; color: #fff; z-index: 1000; font-family: monospace; font-size: 13px; }
     #agent-info-card h3 { font-size: 16px; font-weight: bold; margin-bottom: 8px; color: #4a9eff; }
     #agent-info-card .close-btn { background: none; border: none; color: #fff; font-size: 20px; cursor: pointer; float: right; }
     #agent-info-card .info-row { margin: 6px 0; display: flex; justify-content: space-between; }
     #agent-info-card .info-label { color: #aaa; }
     #agent-info-card .info-value { font-weight: bold; }
+    #agent-info-card #agent-card-description { margin: 8px 0 4px; font-size: 12px; color: #c6e2ff; line-height: 1.5; font-style: italic; border-left: 2px solid #4a9eff; padding-left: 8px; display: none; }
+    #agent-info-card #agent-card-domains { margin: 4px 0 8px; font-size: 11px; color: #7fdbca; display: none; }
     #agent-info-card #task-list { margin-top: 8px; padding-left: 16px; max-height: 80px; overflow-y: auto; }
     #agent-info-card #task-list li { margin-bottom: 3px; }
   </style>
@@ -102,6 +104,8 @@
   <div id="agent-info-card">
     <button class="close-btn" onclick="window.hideAgentInfo()">×</button>
     <h3 id="agent-card-name">Agent Name</h3>
+    <div id="agent-card-description"></div>
+    <div id="agent-card-domains"></div>
     <div class="info-row"><span class="info-label">Status:</span><span id="agent-card-status" class="info-value">-</span></div>
     <div class="info-row"><span class="info-label">CB State:</span><span id="agent-card-cb" class="info-value">-</span></div>
     <div class="info-row"><span class="info-label">Success Rate:</span><span id="agent-card-success" class="info-value">-</span></div>
@@ -121,6 +125,29 @@
       window._currentAgentInfo = { name: agentName, data: data };
       const card = document.getElementById('agent-info-card');
       document.getElementById('agent-card-name').textContent = agentName;
+
+      // Description (self-introduction with preset + model)
+      const descEl = document.getElementById('agent-card-description');
+      const desc = (data.description || '').trim();
+      if (desc) {
+        descEl.textContent = desc;
+        descEl.style.display = 'block';
+      } else {
+        descEl.textContent = '';
+        descEl.style.display = 'none';
+      }
+
+      // Domains
+      const domainsEl = document.getElementById('agent-card-domains');
+      const domains = data.domains || [];
+      if (domains.length > 0) {
+        domainsEl.textContent = '🏷 ' + domains.join('  ·  ');
+        domainsEl.style.display = 'block';
+      } else {
+        domainsEl.textContent = '';
+        domainsEl.style.display = 'none';
+      }
+
       document.getElementById('agent-card-status').textContent = data.status || 'idle';
       document.getElementById('agent-card-cb').textContent = data.cbState || 'CLOSED';
       document.getElementById('agent-card-success').textContent = data.successRate || '94.2%';

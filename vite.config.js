@@ -1,15 +1,25 @@
 import { defineConfig } from 'vite';
+import { resolve } from 'path';
 
 export default defineConfig({
   base: './',
-  build: { outDir: 'dist' },
+  build: {
+    outDir: 'dist',
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, 'index.html'),
+        demo: resolve(__dirname, 'demo.html'),
+        lpc: resolve(__dirname, 'lpc.html'),
+      },
+    },
+  },
   server: {
     host: '0.0.0.0',
     port: 5173,
     allowedHosts: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:18010',
+        target: 'http://172.31.15.10:18010',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
         configure: (proxy) => {

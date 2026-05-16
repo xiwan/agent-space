@@ -23,12 +23,12 @@ export class AgentSprite {
 
     // sprite
     this._sprite = scene.add.sprite(0, 0, name, 0)
-      .setOrigin(0.5, 1).setScale(2);
+      .setOrigin(0.5, 1).setScale(3);
     this.container.add(this._sprite);
 
     // label (name + dot inline)
-    this._label = scene.add.text(0, -105, '', {
-      fontSize: '11px', color: '#e2e8f0', fontFamily: 'monospace',
+    this._label = scene.add.text(0, -165, '', {
+      fontSize: '12px', color: '#e2e8f0', fontFamily: 'monospace',
       backgroundColor: '#00000055', padding: { x: 3, y: 1 },
     }).setOrigin(0.5, 1);
     this.container.add(this._label);
@@ -39,16 +39,19 @@ export class AgentSprite {
     this.container.setAlpha(0.45);
 
     // interaction
-    this._hitArea = scene.add.circle(0, -50, 45, 0x000000, 0)
+    this._hitArea = scene.add.circle(0, -80, 60, 0x000000, 0)
       .setInteractive({ useHandCursor: true });
     this.container.add(this._hitArea);
 
     this._hitArea.on('pointerdown', (p) => {
       p.event.stopPropagation();
+      const meta = this.scene?.getAgentMeta?.(this.name) || {};
       this.scene?.showAgentInfo?.(this.name, {
         status: this.status, cbState: 'CLOSED',
         successRate: '94.2%', latency: '1.2s',
         tasks: ['Task 1', 'Task 2', 'Task 3'],
+        description: meta.description || '',
+        domains: meta.domains || [],
       });
     });
     this._hitArea.on('pointerover', () => {
@@ -57,7 +60,7 @@ export class AgentSprite {
     this._hitArea.on('pointerout', () => this.container.setScale(1));
   }
 
-  /** 走到目标位置后切换状态 */
+  /** 走到目标位置后切换状态，遇障碍物走 L 形 */
   walkTo(targetX, targetY, newStatus) {
     if (this.status === newStatus &&
         Math.abs(this.container.x - targetX) < 5 &&
@@ -65,39 +68,82 @@ export class AgentSprite {
 
     this._stopMovement();
 
-    const dx = targetX - this.container.x;
-    const dy = targetY - this.container.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
+    const sx = this.container.x, sy = this.container.y;
+    const dist = Math.sqrt((targetX - sx) ** 2 + (targetY - sy) ** 2);
+    if (dist < 10) { this.updateStatus(newStatus); return; }
 
-    if (dist < 10) {
-      // 已经在目标位置附近，直接切换
+    // 构建路径点：检查直线是否穿过障碍物，是则走 L 形
+    const obstacles = this.scene._obstacles || [];
+    const waypoints = this._buildPath(sx, sy, targetX, targetY, obstacles);
+
+    this._sprite.setFlipX(targetX < sx);
+    const walkKey = `${this.name}_walk`;
+    if (this.scene.anims.exists(walkKey)) this._sprite.play(walkKey);
+    this.container.setAlpha(1);
+
+    this._walkWaypoints(waypoints, 0, newStatus);
+  }
+
+  _walkWaypoints(pts, idx, newStatus) {
+    if (idx >= pts.length) {
+      this._walkTween = null;
+      this._sprite.setFlipX(false);
       this.updateStatus(newStatus);
       return;
     }
+    const { x, y } = pts[idx];
+    const dx = x - this.container.x, dy = y - this.container.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < 5) { this._walkWaypoints(pts, idx + 1, newStatus); return; }
 
-    // 朝向
     this._sprite.setFlipX(dx < 0);
-
-    // walk 动画
-    const walkKey = `${this.name}_walk`;
-    if (this.scene.anims.exists(walkKey)) this._sprite.play(walkKey);
-
-    // 移动中先设置为非 offline 透明度
-    this.container.setAlpha(1);
-
     this._walkTween = this.scene.tweens.add({
       targets: this.container,
-      x: targetX,
-      y: targetY,
-      duration: dist * 10, // ~10ms per pixel
+      x, y,
+      duration: dist * 6,
       ease: 'Linear',
       onUpdate: () => this._updateDepth(),
-      onComplete: () => {
-        this._walkTween = null;
-        this._sprite.setFlipX(false);
-        this.updateStatus(newStatus);
-      },
+      onComplete: () => this._walkWaypoints(pts, idx + 1, newStatus),
     });
+  }
+
+  _buildPath(sx, sy, tx, ty, obstacles) {
+    // 直线无碰撞 → 直走
+    if (!this._hitsObstacle(sx, sy, tx, ty, obstacles)) {
+      return [{ x: tx, y: ty }];
+    }
+    // L 形：先水平再垂直
+    const mid1 = { x: tx, y: sy };
+    if (!this._hitsObstacle(sx, sy, mid1.x, mid1.y, obstacles) &&
+        !this._hitsObstacle(mid1.x, mid1.y, tx, ty, obstacles)) {
+      return [mid1, { x: tx, y: ty }];
+    }
+    // L 形：先垂直再水平
+    const mid2 = { x: sx, y: ty };
+    if (!this._hitsObstacle(sx, sy, mid2.x, mid2.y, obstacles) &&
+        !this._hitsObstacle(mid2.x, mid2.y, tx, ty, obstacles)) {
+      return [mid2, { x: tx, y: ty }];
+    }
+    // 都不行，走底部绕行
+    const bottom = this.scene._roomRows * this.scene._tileScaled - 30;
+    return [{ x: sx, y: bottom }, { x: tx, y: bottom }, { x: tx, y: ty }];
+  }
+
+  _hitsObstacle(x1, y1, x2, y2, obstacles) {
+    const pad = 40; // agent 半径
+    for (const o of obstacles) {
+      const left = o.x - pad, right = o.x + o.w + pad;
+      const top = o.y - pad, bottom = o.y + o.h + pad;
+      // 线段与矩形相交检测（简化：检查线段的采样点）
+      const steps = Math.max(4, Math.ceil(Math.sqrt((x2-x1)**2 + (y2-y1)**2) / 30));
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const px = x1 + (x2 - x1) * t;
+        const py = y1 + (y2 - y1) * t;
+        if (px > left && px < right && py > top && py < bottom) return true;
+      }
+    }
+    return false;
   }
 
   /** 原地切换状态 */

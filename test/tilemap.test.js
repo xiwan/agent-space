@@ -7,7 +7,7 @@ describe('tilemap.json structure', () => {
   it('has required top-level fields', () => {
     expect(tm.tileSize).toBe(32);
     expect(tm.scale).toBe(3);
-    expect(tm.size).toEqual({ cols: 18, rows: 10 });
+    expect(tm.size).toEqual({ cols: 16, rows: 9 });
     expect(tm.tileset).toBeDefined();
     expect(tm.sprites).toBeDefined();
     expect(tm.ground).toBeDefined();

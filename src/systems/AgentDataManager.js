@@ -13,6 +13,7 @@ export class AgentDataManager {
     this._interval = 10000;
     this._heartbeatAgents = {};  // name → {busy, idle} 来自 /heartbeat
     this._healthData = null;     // 最新 /health 响应
+    this._agentMeta = {};        // name → {description, domains} 来自 /heartbeat
   }
 
   start() {
@@ -38,9 +39,21 @@ export class AgentDataManager {
 
     this._healthData = hData;
 
-    // 从 heartbeat 提取 per-agent busy/idle
+    // 从 heartbeat 提取 per-agent busy/idle + meta (description, domains)
     const hbAgents = hbData?.snapshot?.agents ?? {};
     this._heartbeatAgents = hbAgents;
+
+    // 更新 per-agent meta（description, domains）
+    for (const [name, hb] of Object.entries(hbAgents)) {
+      const meta = {
+        description: hb.description || '',
+        domains: hb.domains || [],
+      };
+      this._agentMeta[name] = meta;
+      if (this.scene.updateAgentMeta) {
+        this.scene.updateAgentMeta(name, meta);
+      }
+    }
 
     // 从 health 获取全局 busy 信息
     const poolBusy = hData.pool?.busy ?? 0;
