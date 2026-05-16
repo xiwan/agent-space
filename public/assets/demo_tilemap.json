@@ -1,0 +1,139 @@
+{
+  "tileSize": 48,
+  "srcDir": "design/RPG_MAKER_MV/Interiors/Theme_Sorter_MV",
+  "items": {
+    "desk_large": {
+      "src": "Conference_Hall_01.png",
+      "row": 0,
+      "col": 0,
+      "w": 2,
+      "h": 2
+    },
+    "desk_small": {
+      "src": "Conference_Hall_01.png",
+      "row": 0,
+      "col": 2,
+      "w": 1,
+      "h": 1
+    },
+    "chair_office": {
+      "src": "Conference_Hall_01.png",
+      "row": 0,
+      "col": 4,
+      "w": 1,
+      "h": 1
+    },
+    "whiteboard": {
+      "src": "Conference_Hall_01.png",
+      "row": 2,
+      "col": 0,
+      "w": 2,
+      "h": 2
+    },
+    "projector": {
+      "src": "Conference_Hall_01.png",
+      "row": 2,
+      "col": 4,
+      "w": 1,
+      "h": 1
+    },
+    "sofa": {
+      "src": "Living_Room_01.png",
+      "row": 0,
+      "col": 0,
+      "w": 2,
+      "h": 1
+    },
+    "armchair": {
+      "src": "Living_Room_01.png",
+      "row": 0,
+      "col": 2,
+      "w": 1,
+      "h": 1
+    },
+    "table": {
+      "src": "Living_Room_01.png",
+      "row": 0,
+      "col": 4,
+      "w": 2,
+      "h": 1
+    },
+    "tv": {
+      "src": "Living_Room_01.png",
+      "row": 2,
+      "col": 0,
+      "w": 2,
+      "h": 2
+    },
+    "lamp": {
+      "src": "Living_Room_01.png",
+      "row": 1,
+      "col": 4,
+      "w": 1,
+      "h": 2
+    },
+    "plant": {
+      "src": "Living_Room_01.png",
+      "row": 1,
+      "col": 6,
+      "w": 1,
+      "h": 1
+    },
+    "bookshelf": {
+      "src": "Living_Room_01.png",
+      "row": 4,
+      "col": 0,
+      "w": 2,
+      "h": 2
+    },
+    "carpet": {
+      "src": "Living_Room_01.png",
+      "row": 6,
+      "col": 0,
+      "w": 2,
+      "h": 2
+    },
+    "desk_school": {
+      "src": "Classroom_and_Library_01.png",
+      "row": 0,
+      "col": 0,
+      "w": 1,
+      "h": 1
+    },
+    "chair": {
+      "src": "Classroom_and_Library_01.png",
+      "row": 0,
+      "col": 1,
+      "w": 1,
+      "h": 1
+    },
+    "blackboard": {
+      "src": "Classroom_and_Library_01.png",
+      "row": 0,
+      "col": 2,
+      "w": 2,
+      "h": 2
+    },
+    "cabinet": {
+      "src": "Classroom_and_Library_01.png",
+      "row": 2,
+      "col": 0,
+      "w": 1,
+      "h": 2
+    },
+    "computer": {
+      "src": "Classroom_and_Library_01.png",
+      "row": 0,
+      "col": 6,
+      "w": 1,
+      "h": 1
+    },
+    "server_rack": {
+      "src": "Classroom_and_Library_01.png",
+      "row": 4,
+      "col": 6,
+      "w": 1,
+      "h": 2
+    }
+  }
+}

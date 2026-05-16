@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <title>Tile Picker</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #1a1a2e; color: #e0e0e0; font-family: monospace; padding: 16px; }
+    h2 { color: #7fdbca; font-size: 14px; margin: 12px 0 8px; }
+    .sheet { position: relative; display: inline-block; margin-bottom: 20px; cursor: crosshair; }
+    .sheet canvas { image-rendering: pixelated; border: 1px solid #30363d; }
+    #picked { position: fixed; right: 16px; top: 16px; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 12px; width: 300px; max-height: 90vh; overflow-y: auto; font-size: 11px; }
+    #picked h3 { color: #4ade80; margin-bottom: 8px; }
+    .pick-item { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; padding: 4px; border-radius: 4px; }
+    .pick-item:hover { background: #30363d; }
+    .pick-item canvas { image-rendering: pixelated; border: 1px solid #444; }
+    .pick-item input { background: #0d1117; border: 1px solid #30363d; color: #e0e0e0; padding: 2px 6px; font-family: monospace; font-size: 11px; width: 100px; border-radius: 3px; }
+    button { padding: 6px 12px; background: #30363d; color: #4ade80; border: 1px solid #4ade80; font-family: monospace; cursor: pointer; border-radius: 4px; margin-top: 8px; }
+    #status { color: #888; font-size: 11px; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <h1 style="color:#7fdbca; font-size:16px; margin-bottom:8px;">🎯 Tile Picker — 点击选取物件，输入名字，导出映射表</h1>
+  <p style="font-size:11px; color:#888; margin-bottom:12px;">点击起始格 → 拖到结束格 → 输入名字。支持多 tile 物件。</p>
+  <div id="sheets"></div>
+  <div id="picked">
+    <h3>已选物件 (<span id="count">0</span>)</h3>
+    <div id="pick-list"></div>
+    <button onclick="exportJSON()">导出 JSON</button>
+    <div id="status"></div>
+  </div>
+
+  <script>
+    const TILE = 48;
+    const SCALE = 2;
+    const TS = TILE * SCALE;
+    const SOURCES = [
+      "assets/mv/Conference_Hall_01.png",
+      "assets/mv/Living_Room_01.png",
+      "assets/mv/Classroom_and_Library_01.png",
+    ];
+
+    let picks = [];
+    let dragStart = null;
+    let currentSheet = null;
+
+    async function init() {
+      const container = document.getElementById('sheets');
+      for (const src of SOURCES) {
+        const img = new Image();
+        img.src = src;
+        await new Promise(r => img.onload = r);
+
+        const name = src.split('/').pop().replace('.png', '');
+        const h2 = document.createElement('h2');
+        h2.textContent = name;
+        container.appendChild(h2);
+
+        const div = document.createElement('div');
+        div.className = 'sheet';
+        const canvas = document.createElement('canvas');
+        const cols = img.width / TILE;
+        const rows = img.height / TILE;
+        canvas.width = img.width * SCALE;
+        canvas.height = img.height * SCALE;
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        // Grid
+        ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+        ctx.lineWidth = 0.5;
+        for (let c = 0; c <= cols; c++) { ctx.beginPath(); ctx.moveTo(c*TS, 0); ctx.lineTo(c*TS, canvas.height); ctx.stroke(); }
+        for (let r = 0; r <= rows; r++) { ctx.beginPath(); ctx.moveTo(0, r*TS); ctx.lineTo(canvas.width, r*TS); ctx.stroke(); }
+
+        canvas.dataset.src = src;
+        canvas.dataset.img = name;
+        canvas.addEventListener('mousedown', onMouseDown);
+        canvas.addEventListener('mouseup', onMouseUp);
+        div.appendChild(canvas);
+        container.appendChild(div);
+      }
+    }
+
+    function onMouseDown(e) {
+      const rect = e.target.getBoundingClientRect();
+      const col = Math.floor((e.clientX - rect.left) / TS);
+      const row = Math.floor((e.clientY - rect.top) / TS);
+      dragStart = { col, row };
+      currentSheet = e.target;
+    }
+
+    function onMouseUp(e) {
+      if (!dragStart || !currentSheet) return;
+      const rect = currentSheet.getBoundingClientRect();
+      const col = Math.floor((e.clientX - rect.left) / TS);
+      const row = Math.floor((e.clientY - rect.top) / TS);
+      
+      const c1 = Math.min(dragStart.col, col);
+      const r1 = Math.min(dragStart.row, row);
+      const c2 = Math.max(dragStart.col, col);
+      const r2 = Math.max(dragStart.row, row);
+      const w = c2 - c1 + 1;
+      const h = r2 - r1 + 1;
+
+      picks.push({
+        src: currentSheet.dataset.src.split('/').pop(),
+        row: r1, col: c1, w, h,
+        name: `item_${picks.length}`
+      });
+
+      renderPicks();
+      highlightPick(picks.length - 1);
+      dragStart = null;
+      currentSheet = null;
+    }
+
+    function highlightPick(idx) {
+      // Highlight on canvas
+      const p = picks[idx];
+      const canvases = document.querySelectorAll('.sheet canvas');
+      for (const c of canvases) {
+        if (c.dataset.src.includes(p.src)) {
+          const ctx = c.getContext('2d');
+          ctx.strokeStyle = '#ff0';
+          ctx.lineWidth = 3;
+          ctx.strokeRect(p.col * TS, p.row * TS, p.w * TS, p.h * TS);
+        }
+      }
+    }
+
+    function renderPicks() {
+      const list = document.getElementById('pick-list');
+      document.getElementById('count').textContent = picks.length;
+      list.innerHTML = '';
+      picks.forEach((p, i) => {
+        const div = document.createElement('div');
+        div.className = 'pick-item';
+        div.innerHTML = `
+          <span style="color:#666">${p.src.slice(0,12)}… r${p.row}c${p.col} ${p.w}x${p.h}</span>
+          <input value="${p.name}" onchange="picks[${i}].name=this.value" />
+          <span style="cursor:pointer;color:#f66" onclick="picks.splice(${i},1);renderPicks()">✕</span>
+        `;
+        list.appendChild(div);
+      });
+    }
+
+    function exportJSON() {
+      const items = {};
+      for (const p of picks) {
+        items[p.name] = { src: p.src, row: p.row, col: p.col, w: p.w, h: p.h };
+      }
+      const output = { tileSize: TILE, items };
+      const blob = new Blob([JSON.stringify(output, null, 2)], {type: 'application/json'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'demo_tilemap.json';
+      a.click();
+      document.getElementById('status').textContent = `已导出 ${picks.length} 个物件`;
+    }
+
+    init();
+  </script>
+</body>
+</html>
