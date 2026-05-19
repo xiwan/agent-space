@@ -15,7 +15,8 @@
 
 import { setObstacle, setZoneCell, findZoneAt, ZONE_KEYS, GRID_SIZE } from './MapConfig.js';
 
-const TOOLS = ['blocked', 'home', 'work', 'idle']; // clear 通过右键, 不在 toolbar 显示
+// v2.4.1: 'eraser' 与 blocked/zone tools 并列 — 涂任意 cell, 清 obstacle + 清当前 agent 全 zones
+const TOOLS = ['blocked', 'home', 'work', 'idle', 'eraser'];
 
 export class MapEditor {
   /**
@@ -153,7 +154,16 @@ export class MapEditor {
 
     const erase = this._mouseButton === 2; // 右键擦除
 
-    if (this._tool === 'blocked') {
+    if (this._tool === 'eraser') {
+      // v2.4.1: 显式 eraser tool — 清 obstacle + 清当前 agent 在 home/work/idle 该 cell
+      // (不依赖右键, 触屏友好). 不需要选 agent 也能清 obstacle.
+      setObstacle(this.mapConfig, col, row, false);
+      if (this._agent) {
+        for (const z of ZONE_KEYS) {
+          setZoneCell(this.mapConfig, z, this._agent, col, row, false);
+        }
+      }
+    } else if (this._tool === 'blocked') {
       setObstacle(this.mapConfig, col, row, !erase);
     } else if (ZONE_KEYS.includes(this._tool)) {
       if (!this._agent) return;
