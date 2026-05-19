@@ -222,3 +222,14 @@ export function cellToPx(col, row, gridSize = GRID_SIZE) {
 export function pxToCell(x, y, gridSize = GRID_SIZE) {
   return [Math.floor(x / gridSize), Math.floor(y / gridSize)];
 }
+
+/**
+ * v2.6.0: 返回指定 zone 的所有 cell (浅拷贝), 或空数组.
+ * @param {string} zoneKey 'home' | 'work' | 'idle'
+ * @param {object|null} mapConfig
+ * @returns {Array<[number, number]>}
+ */
+export function getZoneCells(zoneKey, mapConfig) {
+  if (!mapConfig || !mapConfig.zones) return [];
+  return mapConfig.zones[zoneKey] || [];
+}

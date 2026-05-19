@@ -27,17 +27,10 @@ const RENDER_SCALE = 2;
 const NUM_CHARS = 6;
 
 const STATE_COLORS = {
-  busy:    '#10b981',  // green
-  idle:    '#6b7280',  // gray
-  offline: '#475569',  // dim
+  busy:    '#eab308',  // yellow
+  idle:    '#10b981',  // green
+  offline: '#9ca3af',  // gray
   error:   '#ef4444',  // red
-};
-
-const STATE_LABELS = {
-  busy:    'BUSY',
-  idle:    'idle',
-  offline: 'offline',
-  error:   'ERROR',
 };
 
 class SpriteSheet {
@@ -256,7 +249,8 @@ function makeAgent(spec) {
     ty: spec.y,
     facing: 'down',
     walking: false,
-    sitting: spec.state === 'busy', // busy → 坐在工位
+    sitting: false,
+    wanderUntil: 0,
   };
 }
 
@@ -355,6 +349,21 @@ export class PixelRenderer {
       }
 
       // 已存在 + 不 paused: 更新目标位置
+      const stateChanged = prev.state !== spec.state;
+
+      // v2.6.0: agent 正在 wander 且 state 没变 → 只更新 metadata, 不打断 wander
+      const isWandering = !stateChanged && (prev.path || prev.wanderUntil > 0);
+      if (isWandering) {
+        return {
+          ...prev,
+          state: spec.state,
+          color: spec.color,
+          description: spec.description,
+          domains: spec.domains,
+          active: spec.active,
+        };
+      }
+
       const moved = prev.tx !== spec.x || prev.ty !== spec.y;
       const newFacing = moved
         ? (spec.x > prev.cx ? 'right' : spec.x < prev.cx ? 'left' : prev.facing)
@@ -368,10 +377,11 @@ export class PixelRenderer {
         ty: spec.y,
         facing: newFacing,
         walking: moved,
-        sitting: !moved && spec.state === 'busy',
-        path: spec.path && spec.path.length > 1 ? spec.path.slice() : null,
+        sitting: false,
+        path: stateChanged ? null : (spec.path && spec.path.length > 1 ? spec.path.slice() : null),
         pathIdx: 0,
         pathGridSize: spec.pathGridSize || 16,
+        wanderUntil: stateChanged ? 0 : (prev.wanderUntil || 0),
       };
     });
 
@@ -396,6 +406,15 @@ export class PixelRenderer {
    */
   setMapConfig(mapConfig) {
     this._mapConfig = mapConfig;
+  }
+
+  /**
+   * v2.6.0: 注入寻路 + zone 查询函数 (依赖反转, renderer 不直接 import).
+   * @param {{ findPath: Function, getZoneCells: Function }} fns
+   */
+  setPathFinder(fns) {
+    this._findPath = fns.findPath || null;
+    this._getZoneCells = fns.getZoneCells || null;
   }
 
   /**
@@ -445,7 +464,13 @@ export class PixelRenderer {
     this.frame++;
     if (this._paused) return; // v2.5.0: paused 不做位置插值, sprite 冻结
     const SPEED = 1.5; // 每帧像素
+    const now = performance.now();
     for (const a of this.agents) {
+      // v2.6.0: wander — 无 path + idle/busy + 等待结束 → 选新 cell
+      if (!a.path && (a.state === 'idle' || a.state === 'busy') && now >= (a.wanderUntil || 0)) {
+        this._tryWander(a);
+      }
+
       // v2.4.0: 有 path 则走 path (逐 cell 插值); 无 path 退化为直线插值
       let stepX, stepY;
       if (a.path && a.pathIdx < a.path.length) {
@@ -482,13 +507,71 @@ export class PixelRenderer {
           // 到达终点
           if (a.walking) {
             a.walking = false;
-            a.sitting = a.state === 'busy';
             a.path = null;
+            // v2.6.0: 同步 tx/ty 到当前位置, 防止 fallback 直线插值拉回代表 cell
+            a.tx = a.cx;
+            a.ty = a.cy;
+            // v2.6.0: 到达后设 wander 等待
+            if (a.state === 'idle' || a.state === 'busy') {
+              a.wanderUntil = now + 2000 + Math.random() * 3000;
+            }
           }
         }
       } else {
         a.cx += (dx / dist) * SPEED;
         a.cy += (dy / dist) * SPEED;
+      }
+    }
+  }
+
+  /**
+   * v2.6.0: 尝试在当前 state 对应 zone 内选一个新 cell 并寻路.
+   * 排除当前 cell + 其他 agent 已占用 / 正在前往的 cell.
+   */
+  _tryWander(a) {
+    if (!this._mapConfig || !this._findPath || !this._getZoneCells) return;
+    const zoneKey = a.state === 'busy' ? 'work' : 'idle';
+    const cells = this._getZoneCells(zoneKey, this._mapConfig);
+    if (!cells || cells.length === 0) return;
+    const gs = this._mapConfig.gridSize;
+    const curCol = Math.floor(a.cx / gs);
+    const curRow = Math.floor(a.cy / gs);
+
+    // 收集其他 agent 的 "目标 cell" (path 终点) + 当前所在 cell
+    const occupied = new Set();
+    for (const other of this.agents) {
+      if (other === a) continue;
+      // 终点优先 (它正在过去)
+      if (other.path && other.path.length > 0) {
+        const [tc, tr] = other.path[other.path.length - 1];
+        occupied.add(`${tc},${tr}`);
+      } else {
+        // 没在走 → 用当前 cell
+        const oc = Math.floor(other.cx / gs);
+        const or = Math.floor(other.cy / gs);
+        occupied.add(`${oc},${or}`);
+      }
+    }
+
+    const candidates = cells.filter(([c, r]) =>
+      !(c === curCol && r === curRow) && !occupied.has(`${c},${r}`)
+    );
+    if (candidates.length === 0) return; // zone 满了, 等下次 tick
+    const target = candidates[Math.floor(Math.random() * candidates.length)];
+    const path = this._findPath(this._mapConfig.obstacles, [curCol, curRow], target);
+    if (path && path.length > 1) {
+      a.path = path;
+      a.pathIdx = 0;
+      a.pathGridSize = gs;
+      a.walking = true;
+      // 朝向: 看第一步方向
+      const [nc, nr] = path[1];
+      const nx = nc * gs + gs / 2;
+      const ny = nr * gs + gs / 2;
+      if (Math.abs(nx - a.cx) > Math.abs(ny - a.cy)) {
+        a.facing = nx > a.cx ? 'right' : 'left';
+      } else {
+        a.facing = ny > a.cy ? 'down' : 'up';
       }
     }
   }
@@ -546,27 +629,25 @@ export class PixelRenderer {
     const sorted = [...this.agents].sort((a, b) => a.cy - b.cy);
 
     for (const a of sorted) {
-      const dim = a.state === 'offline';
       const isSelected = a.name === this._selectedName;
-      ctx.globalAlpha = dim ? 0.4 : 1.0;
 
       // 选中: 先画白色像素描边 (会被 sprite 中心遮住, 视觉上形成 2px 白边)
       if (isSelected) {
-        // pre-flight: 先调一次 drawCharacter 拿到 frameInfo, 但不实际渲染顺序问题
-        // 我们直接用一份"试算"逻辑模拟 drawCharacter 的 sx/sy/flipX/yOffset 选取
         const frameInfo = computeFrameInfo(a, this.frame);
         ctx.save();
-        ctx.globalAlpha = 1; // outline 始终满色
         drawOutline(ctx, sheet, a.cx, a.cy, a.color, frameInfo);
         ctx.restore();
-        ctx.globalAlpha = dim ? 0.4 : 1.0; // 恢复
       }
 
       drawCharacter(ctx, sheet, a.cx, a.cy, a.color, a.facing, a.walking, a.sitting, this.frame);
-      ctx.globalAlpha = 1.0;
 
-      // name + state label
+      // name label
       this._drawLabel(a);
+
+      // v2.6.0: pixel chat bubble for idle/busy with description
+      if ((a.state === 'idle' || a.state === 'busy') && a.description) {
+        this._drawBubble(a);
+      }
     }
   }
 
@@ -638,8 +719,7 @@ export class PixelRenderer {
     const { ctx } = this;
     const labelY = a.cy - 80;
     const text = `${a.name}`;
-    const stateText = STATE_LABELS[a.state] || a.state;
-    const stateColor = STATE_COLORS[a.state] || '#888';
+    const nameColor = STATE_COLORS[a.state] || '#fff';
 
     ctx.save();
     ctx.font = 'bold 11px system-ui, sans-serif';
@@ -648,20 +728,72 @@ export class PixelRenderer {
 
     // bg
     const tw = ctx.measureText(text).width;
-    const sw = ctx.measureText(stateText).width;
     const padX = 4;
-    const totalW = Math.max(tw, sw) + padX * 2;
+    const totalW = tw + padX * 2;
     ctx.fillStyle = 'rgba(0,0,0,0.65)';
-    ctx.fillRect(a.cx - totalW / 2, labelY - 10, totalW, 24);
+    ctx.fillRect(a.cx - totalW / 2, labelY - 9, totalW, 14);
 
-    // name
-    ctx.fillStyle = '#fff';
+    // name (colored by state)
+    ctx.fillStyle = nameColor;
     ctx.fillText(text, a.cx, labelY - 1);
 
-    // state
-    ctx.fillStyle = stateColor;
-    ctx.font = '10px system-ui, sans-serif';
-    ctx.fillText(stateText, a.cx, labelY + 10);
+    ctx.restore();
+  }
+
+  /**
+   * v2.6.0: 像素风聊天气泡 (idle/busy 时显示 description).
+   * 风格: 纯色填充 + 1px 黑边 (像素风, 无圆角无阴影), 像素字体, 方块尾巴.
+   */
+  _drawBubble(a) {
+    const { ctx } = this;
+    const desc = (a.description || '').trim();
+    if (!desc) return;
+
+    // 截断长文本 — 单行最大宽度
+    const MAX_CHARS = 24;
+    const text = desc.length > MAX_CHARS ? desc.slice(0, MAX_CHARS - 1) + '…' : desc;
+
+    ctx.save();
+    ctx.font = '10px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    const padX = 6;
+    const padY = 4;
+    const tw = ctx.measureText(text).width;
+    const bw = Math.ceil(tw + padX * 2);
+    const bh = 16;
+
+    // bubble 位于名字标签上方, 留 4px 间距 + 4px 给尾巴
+    const bubbleBottom = a.cy - 80 - 9 - 8; // labelY (a.cy-80) - bg upper(9) - gap(8)
+    const bubbleTop = bubbleBottom - bh;
+    const bx = Math.round(a.cx - bw / 2);
+    const by = Math.round(bubbleTop);
+
+    // 1. 黑边 (外层 +1px)
+    ctx.fillStyle = '#000';
+    ctx.fillRect(bx - 1, by - 1, bw + 2, bh + 2);
+
+    // 2. 白色填充
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(bx, by, bw, bh);
+
+    // 3. 像素方块尾巴 (3 阶递减, 像素风)
+    const tailX = Math.round(a.cx);
+    const tailY = by + bh; // 紧贴 bubble 底部
+    // 黑边 (大方块)
+    ctx.fillStyle = '#000';
+    ctx.fillRect(tailX - 3, tailY,     6, 1);
+    ctx.fillRect(tailX - 2, tailY + 1, 4, 1);
+    ctx.fillRect(tailX - 1, tailY + 2, 2, 1);
+    // 白填充 (内层)
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(tailX - 2, tailY,     4, 1);
+    ctx.fillRect(tailX - 1, tailY + 1, 2, 1);
+
+    // 4. 文字
+    ctx.fillStyle = '#1f2937';
+    ctx.fillText(text, a.cx, by + bh / 2);
 
     ctx.restore();
   }

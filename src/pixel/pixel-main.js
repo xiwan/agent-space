@@ -19,7 +19,7 @@ import { Sidebar } from './Sidebar.js';
 import { MapEditor } from './MapEditor.js';
 import {
   loadMapConfig, saveMapConfig, emptyMapConfig,
-  getTargetCell, cellToPx, pxToCell,
+  getTargetCell, cellToPx, pxToCell, getZoneCells,
 } from './MapConfig.js';
 import { findPath } from './PathFinder.js';
 
@@ -106,6 +106,9 @@ async function main() {
 
   try { await renderer.init(); }
   catch (e) { setStatus(`sprite load failed: ${e.message}`, 'error'); return; }
+
+  // v2.6.0: inject pathfinder for wander
+  renderer.setPathFinder({ findPath, getZoneCells });
 
   // === 背景 select ===
   let storedBg = null;

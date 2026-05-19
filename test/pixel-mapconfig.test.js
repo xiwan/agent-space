@@ -4,7 +4,7 @@ import {
   emptyMapConfig, loadMapConfig, saveMapConfig, clearMapConfig, migrateV1toV2,
   setObstacle, setZoneCell, findZoneAt,
   stateToZone, hashString, getTargetCell,
-  cellToPx, pxToCell,
+  cellToPx, pxToCell, getZoneCells,
   GRID_SIZE, COLS, ROWS, ZONE_KEYS,
 } from '../src/pixel/MapConfig.js';
 
@@ -308,6 +308,28 @@ describe('MapConfig (v2.5.0 global zones)', () => {
 
     it('save null cfg → false', () => {
       expect(saveMapConfig('x', null)).toBe(false);
+    });
+  });
+
+  describe('getZoneCells (v2.6.0)', () => {
+    it('returns cells for existing zone', () => {
+      const cfg = emptyMapConfig();
+      cfg.zones.work = [[1, 2], [3, 4]];
+      expect(getZoneCells('work', cfg)).toEqual([[1, 2], [3, 4]]);
+    });
+
+    it('returns empty array for empty zone', () => {
+      const cfg = emptyMapConfig();
+      expect(getZoneCells('idle', cfg)).toEqual([]);
+    });
+
+    it('returns empty array for unknown zone key', () => {
+      const cfg = emptyMapConfig();
+      expect(getZoneCells('unknown', cfg)).toEqual([]);
+    });
+
+    it('returns empty array for null mapConfig', () => {
+      expect(getZoneCells('home', null)).toEqual([]);
     });
   });
 });
