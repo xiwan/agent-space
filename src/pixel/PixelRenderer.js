@@ -88,6 +88,35 @@ class SpriteSheet {
 }
 
 /**
+ * 计算 sprite 当前应该用 sheet 哪一帧 (纯函数, 不画).
+ * drawCharacter 和 drawOutline 共享此结果, 保证描边和 sprite 用同一帧.
+ *
+ * @param agent { facing, walking, sitting, state }
+ * @param frame 全局帧数
+ * @returns {{ sx, sy, flipX, yOffset }}
+ */
+function computeFrameInfo(agent, frame) {
+  let rowY = 0;
+  let flipX = false;
+  if (agent.facing === 'down') rowY = 0;
+  else if (agent.facing === 'up') rowY = 1;
+  else if (agent.facing === 'right') rowY = 2;
+  else if (agent.facing === 'left') { rowY = 2; flipX = true; }
+
+  let colX = 1;
+  let yOffset = 0;
+  if (agent.sitting) {
+    colX = 3;
+    yOffset = 16;
+  } else if (agent.walking) {
+    const w = Math.floor(frame / 6) % 4;
+    colX = w === 0 ? 0 : w === 1 ? 1 : w === 2 ? 0 : 2;
+  }
+
+  return { sx: colX * FRAME_W, sy: rowY * FRAME_H, flipX, yOffset };
+}
+
+/**
  * 绘制一个角色 sprite
  * @param ctx Canvas 2D context
  * @param sheet SpriteSheet
@@ -97,32 +126,17 @@ class SpriteSheet {
  * @param walking 是否处于走路状态 (true 时播放走路动画)
  * @param sitting 是否处于坐下状态
  * @param frame 全局帧数
+ * @returns {{ sx: number, sy: number, flipX: boolean, yOffset: number } | null}
+ *   返回此次绘制的 sheet 切片信息, 用于外部画 outline (复用同一帧). null 表示未绘制.
  */
 function drawCharacter(ctx, sheet, x, y, colorIdx, facing, walking, sitting, frame) {
-  if (!sheet.loaded) return;
+  if (!sheet.loaded) return null;
 
   const charImg = sheet.chars[colorIdx % sheet.chars.length];
-  if (!charImg.complete || charImg.naturalWidth === 0) return;
+  if (!charImg.complete || charImg.naturalWidth === 0) return null;
 
-  let rowY = 0;
-  let flipX = false;
-  if (facing === 'down')  rowY = 0;
-  else if (facing === 'up')   rowY = 1;
-  else if (facing === 'right') rowY = 2;
-  else if (facing === 'left')  { rowY = 2; flipX = true; }
-
-  let colX = 1;
-  let yOffset = 0;
-  if (sitting) {
-    colX = 3;
-    yOffset = 16;
-  } else if (walking) {
-    const w = Math.floor(frame / 6) % 4;
-    colX = w === 0 ? 0 : w === 1 ? 1 : w === 2 ? 0 : 2;
-  }
-
-  const sx = colX * FRAME_W;
-  const sy = rowY * FRAME_H;
+  const info = computeFrameInfo({ facing, walking, sitting }, frame);
+  const { sx, sy, flipX, yOffset } = info;
 
   ctx.save();
   ctx.translate(x, y);
@@ -145,6 +159,72 @@ function drawCharacter(ctx, sheet, x, y, colorIdx, facing, walking, sitting, fra
     FRAME_H * RENDER_SCALE,
   );
 
+  ctx.restore();
+
+  return info;
+}
+
+/**
+ * 在 (x, y) 位置画 sprite 的白色像素描边 (8 方向偏移法).
+ *
+ * 算法: 把当前帧切到 offscreen → 扫描每个非透明像素 → 在主 canvas 8 个 OFFSET
+ * 位置画白色 RENDER_SCALE x RENDER_SCALE 方块. 之后 sprite 本身正常画上去会
+ * 遮住中心, 视觉上形成 2 px 厚的白边.
+ *
+ * @param ctx 主 canvas 2D context
+ * @param sheet SpriteSheet
+ * @param x, y 角色脚部坐标 (canvas 像素, 与 drawCharacter 一致)
+ * @param colorIdx
+ * @param frameInfo drawCharacter 返回值 { sx, sy, flipX, yOffset }
+ */
+const OUTLINE_OFFSETS = [
+  [-2, -2], [0, -2], [2, -2],
+  [-2,  0],          [2,  0],
+  [-2,  2], [0,  2], [2,  2],
+];
+let _outlineCanvas = null;
+let _outlineCtx = null;
+function getOutlineScratch() {
+  if (!_outlineCanvas) {
+    _outlineCanvas = document.createElement('canvas');
+    _outlineCanvas.width = FRAME_W;
+    _outlineCanvas.height = FRAME_H;
+    _outlineCtx = _outlineCanvas.getContext('2d', { willReadFrequently: true });
+    _outlineCtx.imageSmoothingEnabled = false;
+  }
+  return { canvas: _outlineCanvas, ctx: _outlineCtx };
+}
+
+function drawOutline(ctx, sheet, x, y, colorIdx, frameInfo) {
+  if (!frameInfo || !sheet.loaded) return;
+  const charImg = sheet.chars[colorIdx % sheet.chars.length];
+  if (!charImg.complete || charImg.naturalWidth === 0) return;
+
+  const { sx, sy, flipX, yOffset } = frameInfo;
+  const { canvas: tmp, ctx: tctx } = getOutlineScratch();
+  tctx.clearRect(0, 0, FRAME_W, FRAME_H);
+  tctx.drawImage(charImg, sx, sy, FRAME_W, FRAME_H, 0, 0, FRAME_W, FRAME_H);
+  const data = tctx.getImageData(0, 0, FRAME_W, FRAME_H).data;
+
+  // sprite 在主 canvas 上的左上角 (考虑居中对齐 + sitting yOffset)
+  const baseX = x - (FRAME_W / 2) * RENDER_SCALE;
+  const baseY = y - FRAME_H * RENDER_SCALE + yOffset;
+
+  ctx.save();
+  ctx.fillStyle = '#fff';
+  for (let py = 0; py < FRAME_H; py++) {
+    for (let px = 0; px < FRAME_W; px++) {
+      const a = data[(py * FRAME_W + px) * 4 + 3];
+      if (a < 8) continue;
+      // flipX: 左右镜像 sprite, 描边也要镜像
+      const drawPx = flipX ? (FRAME_W - 1 - px) : px;
+      const cx = baseX + drawPx * RENDER_SCALE;
+      const cy = baseY + py * RENDER_SCALE;
+      for (const [ox, oy] of OUTLINE_OFFSETS) {
+        ctx.fillRect(cx + ox, cy + oy, RENDER_SCALE, RENDER_SCALE);
+      }
+    }
+  }
   ctx.restore();
 }
 
@@ -182,12 +262,21 @@ export class PixelRenderer {
     this.frame = 0;
     this._running = false;
     this._lastConfigByName = {};
+    this._selectedName = null;
 
     canvas.addEventListener('click', (e) => this._handleClick(e));
   }
 
   async init() {
     await this.sheet.load();
+  }
+
+  /**
+   * 设置当前选中的 agent (用于绘制白色描边)
+   * @param {string | null} name agent 名, 传 null 取消选中
+   */
+  setSelected(name) {
+    this._selectedName = name || null;
   }
 
   /**
@@ -279,7 +368,21 @@ export class PixelRenderer {
 
     for (const a of sorted) {
       const dim = a.state === 'offline';
+      const isSelected = a.name === this._selectedName;
       ctx.globalAlpha = dim ? 0.4 : 1.0;
+
+      // 选中: 先画白色像素描边 (会被 sprite 中心遮住, 视觉上形成 2px 白边)
+      if (isSelected) {
+        // pre-flight: 先调一次 drawCharacter 拿到 frameInfo, 但不实际渲染顺序问题
+        // 我们直接用一份"试算"逻辑模拟 drawCharacter 的 sx/sy/flipX/yOffset 选取
+        const frameInfo = computeFrameInfo(a, this.frame);
+        ctx.save();
+        ctx.globalAlpha = 1; // outline 始终满色
+        drawOutline(ctx, sheet, a.cx, a.cy, a.color, frameInfo);
+        ctx.restore();
+        ctx.globalAlpha = dim ? 0.4 : 1.0; // 恢复
+      }
+
       drawCharacter(ctx, sheet, a.cx, a.cy, a.color, a.facing, a.walking, a.sitting, this.frame);
       ctx.globalAlpha = 1.0;
 

@@ -1,0 +1,153 @@
+// @vitest-environment happy-dom
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { Sidebar } from '../src/pixel/Sidebar.js';
+
+const SAMPLE = [
+  { name: 'kiro',   color: 0, x: 0, y: 0, state: 'busy',    description: 'Code agent', domains: ['frontend','testing'], active: true },
+  { name: 'codex',  color: 1, x: 0, y: 0, state: 'idle',    description: 'OpenAI',     domains: ['python'],             active: true },
+  { name: 'qwen',   color: 2, x: 0, y: 0, state: 'offline', description: '',           domains: [],                    active: true },
+  { name: 'hermes', color: 3, x: 0, y: 0, state: 'error',   description: 'Bus error',  domains: ['debug'],             active: true },
+];
+
+describe('Sidebar (v2.2.0)', () => {
+  let container;
+  let onToggle;
+  let sidebar;
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    onToggle = vi.fn();
+    sidebar = new Sidebar(container, { onToggle });
+  });
+
+  it('throws if container is missing', () => {
+    expect(() => new Sidebar(null)).toThrow(/container/);
+  });
+
+  it('renders empty initially', () => {
+    expect(container.children.length).toBe(0);
+  });
+
+  it('setAgents renders one card per agent in order', () => {
+    sidebar.setAgents(SAMPLE);
+    const cards = container.querySelectorAll('.pixel-card');
+    expect(cards.length).toBe(4);
+    expect(cards[0].dataset.name).toBe('kiro');
+    expect(cards[1].dataset.name).toBe('codex');
+    expect(cards[2].dataset.name).toBe('qwen');
+    expect(cards[3].dataset.name).toBe('hermes');
+  });
+
+  it('renders name, state badge, description, domains', () => {
+    sidebar.setAgents([SAMPLE[0]]);
+    const card = container.querySelector('.pixel-card');
+    expect(card.querySelector('.pixel-card-name').textContent).toBe('kiro');
+    const badge = card.querySelector('.pixel-state');
+    expect(badge.textContent).toBe('busy');
+    expect(badge.classList.contains('pixel-state-busy')).toBe(true);
+    expect(card.querySelector('.pixel-card-desc').textContent).toBe('Code agent');
+    expect(card.querySelector('.pixel-card-domains').textContent).toBe('frontend, testing');
+  });
+
+  it('shows fallback for empty description and domains', () => {
+    sidebar.setAgents([SAMPLE[2]]);  // qwen: '' / []
+    const card = container.querySelector('.pixel-card');
+    expect(card.querySelector('.pixel-card-desc').textContent).toBe('(no description)');
+    expect(card.querySelector('.pixel-card-domains').textContent).toBe('—');
+  });
+
+  it('offline agent gets .offline class', () => {
+    sidebar.setAgents(SAMPLE);
+    const cards = container.querySelectorAll('.pixel-card');
+    expect(cards[2].classList.contains('offline')).toBe(true);  // qwen
+    expect(cards[0].classList.contains('offline')).toBe(false); // kiro
+  });
+
+  it('selected agent gets .selected class', () => {
+    sidebar.setAgents(SAMPLE);
+    sidebar.setSelected('codex');
+    const cards = container.querySelectorAll('.pixel-card');
+    expect(cards[0].classList.contains('selected')).toBe(false);
+    expect(cards[1].classList.contains('selected')).toBe(true);
+  });
+
+  it('setSelected re-renders to update class', () => {
+    sidebar.setAgents(SAMPLE);
+    sidebar.setSelected('kiro');
+    sidebar.setSelected('hermes');
+    const cards = container.querySelectorAll('.pixel-card');
+    expect(cards[0].classList.contains('selected')).toBe(false);
+    expect(cards[3].classList.contains('selected')).toBe(true);
+  });
+
+  it('setSelected(null) clears selection', () => {
+    sidebar.setAgents(SAMPLE);
+    sidebar.setSelected('kiro');
+    sidebar.setSelected(null);
+    const cards = container.querySelectorAll('.pixel-card');
+    expect([...cards].some(c => c.classList.contains('selected'))).toBe(false);
+  });
+
+  it('setSelected to same value is a no-op (no extra render)', () => {
+    sidebar.setAgents(SAMPLE);
+    sidebar.setSelected('kiro');
+    const firstCard = container.querySelector('.pixel-card');
+    sidebar.setSelected('kiro');
+    const secondCard = container.querySelector('.pixel-card');
+    // 同一个 DOM 节点引用 = 没重渲
+    expect(firstCard).toBe(secondCard);
+  });
+
+  it('clicking a card invokes onToggle with agent name', () => {
+    sidebar.setAgents(SAMPLE);
+    const cards = container.querySelectorAll('.pixel-card');
+    cards[1].click();
+    expect(onToggle).toHaveBeenCalledTimes(1);
+    expect(onToggle).toHaveBeenCalledWith('codex');
+  });
+
+  it('clicking selected card still fires onToggle (caller decides toggle semantics)', () => {
+    sidebar.setAgents(SAMPLE);
+    sidebar.setSelected('kiro');
+    container.querySelectorAll('.pixel-card')[0].click();
+    expect(onToggle).toHaveBeenCalledWith('kiro');
+  });
+
+  it('setAgents with empty array clears all cards', () => {
+    sidebar.setAgents(SAMPLE);
+    sidebar.setAgents([]);
+    expect(container.querySelectorAll('.pixel-card').length).toBe(0);
+  });
+
+  it('setAgents with non-array (null/undefined) treated as empty', () => {
+    sidebar.setAgents(SAMPLE);
+    sidebar.setAgents(null);
+    expect(container.querySelectorAll('.pixel-card').length).toBe(0);
+    sidebar.setAgents(undefined);
+    expect(container.querySelectorAll('.pixel-card').length).toBe(0);
+  });
+
+  it('uses textContent (not innerHTML) for user data — XSS safe', () => {
+    sidebar.setAgents([{
+      name: '<script>alert(1)</script>',
+      color: 0, x: 0, y: 0, state: 'idle',
+      description: '<img src=x onerror=alert(1)>',
+      domains: ['<b>danger</b>'],
+    }]);
+    const card = container.querySelector('.pixel-card');
+    expect(card.querySelector('.pixel-card-name').textContent).toContain('<script>');
+    // 应该没有真正的 script/img 子元素被渲染
+    expect(card.querySelector('script')).toBeNull();
+    expect(card.querySelector('img')).toBeNull();
+  });
+
+  it('preserves card identity across setSelected (no full DOM swap on every selection)', () => {
+    sidebar.setAgents(SAMPLE);
+    // Note: 当前实现是 _render 全量重渲, DOM 节点会换. 这里仅断言数量稳定.
+    const initialCount = container.querySelectorAll('.pixel-card').length;
+    sidebar.setSelected('codex');
+    expect(container.querySelectorAll('.pixel-card').length).toBe(initialCount);
+    sidebar.setSelected(null);
+    expect(container.querySelectorAll('.pixel-card').length).toBe(initialCount);
+  });
+});

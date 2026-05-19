@@ -1,10 +1,16 @@
 /**
  * pixel-main.js — pixel.html 入口
  *
- * 流程: 加载 sprite → 启动 BridgePoller → 每次 onConfig 推到 PixelRenderer
+ * 流程:
+ *   1. 加载 sprite → renderer.init
+ *   2. 实例化 Sidebar (右栏卡片列表)
+ *   3. 启动 BridgePoller, 每 5s 收到 cfg → renderer.setConfig + sidebar.setAgents
+ *   4. 维护 selectedAgentName (单一 source), canvas/sidebar 双向同步选中态
+ *   5. selected 在新一轮 cfg 中消失 → 自动清成 null
  */
 import { BridgePoller } from './BridgeAdapter.js';
 import { PixelRenderer } from './PixelRenderer.js';
+import { Sidebar } from './Sidebar.js';
 
 const POLL_INTERVAL_MS = 5000;
 
@@ -22,32 +28,35 @@ async function main() {
     statusEl.dataset.kind = kind;
   };
 
-  const infoCard = document.getElementById('pixelInfoCard');
-  const infoName = document.getElementById('pixelInfoName');
-  const infoDesc = document.getElementById('pixelInfoDesc');
-  const infoDomains = document.getElementById('pixelInfoDomains');
-  const infoState = document.getElementById('pixelInfoState');
-  const infoClose = document.getElementById('pixelInfoClose');
+  const sidebarEl = document.getElementById('pixelSidebarCards');
+  if (!sidebarEl) {
+    console.error('[pixel] #pixelSidebarCards not found');
+    return;
+  }
 
-  const showAgentInfo = (agent) => {
-    if (!infoCard) return;
-    infoName.textContent = agent.name;
-    infoState.textContent = agent.state;
-    infoState.className = `pixel-state pixel-state-${agent.state}`;
-    infoDesc.textContent = agent.description || '(no description)';
-    infoDomains.textContent = (agent.domains && agent.domains.length)
-      ? agent.domains.join(', ')
-      : '(no domains)';
-    infoCard.style.display = 'block';
+  // === 单一 source: 选中状态 ===
+  let selectedName = null;
+  let lastAgents = [];
+
+  const setSelected = (name) => {
+    if (selectedName === name) return;
+    selectedName = name;
+    renderer.setSelected(name);
+    sidebar.setSelected(name);
   };
 
-  const hideAgentInfo = () => { if (infoCard) infoCard.style.display = 'none'; };
-  if (infoClose) infoClose.addEventListener('click', hideAgentInfo);
+  const toggleSelected = (name) => {
+    setSelected(selectedName === name ? null : name);
+  };
 
   setStatus('loading sprites...');
   const renderer = new PixelRenderer(canvas, {
     assetPath: '/pixel',
-    onAgentClick: showAgentInfo,
+    onAgentClick: (agent) => toggleSelected(agent.name),
+  });
+
+  const sidebar = new Sidebar(sidebarEl, {
+    onToggle: (name) => toggleSelected(name),
   });
 
   try {
@@ -63,14 +72,19 @@ async function main() {
   const poller = new BridgePoller({
     intervalMs: POLL_INTERVAL_MS,
     onConfig: (cfg) => {
+      lastAgents = cfg.agents || [];
       renderer.setConfig(cfg);
-      const n = cfg.agents.length;
-      if (n !== lastAgentCount) {
-        lastAgentCount = n;
-        setStatus(`${n} agents — last update ${new Date().toLocaleTimeString()}`, 'ok');
-      } else {
-        setStatus(`${n} agents — last update ${new Date().toLocaleTimeString()}`, 'ok');
+      sidebar.setAgents(lastAgents);
+
+      // 选中的 agent 在新 cfg 中不存在 → 自动清空选中
+      if (selectedName && !lastAgents.find(a => a.name === selectedName)) {
+        setSelected(null);
       }
+
+      const n = lastAgents.length;
+      const ts = new Date().toLocaleTimeString();
+      setStatus(`${n} agents — last update ${ts}`, 'ok');
+      if (n !== lastAgentCount) lastAgentCount = n;
     },
     onError: (err) => {
       setStatus(`bridge error: ${err.message}`, 'error');
