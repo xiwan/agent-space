@@ -12,11 +12,13 @@ Responsive: side-by-side on desktop, stacked on mobile. Draggable divider betwee
 Two independent entry points share the same Bridge backend:
 
 - **`/`** — Phaser 4 dual-zone office (default).
-- **`/pixel.html`** — standalone Canvas pixel-office viewer (v2.2.0). Lighter weight,
+- **`/pixel.html`** — standalone Canvas pixel-office viewer (v2.3.0). Lighter weight,
   driven by `/health` + `/health/agents` for real-time per-session `busy` state.
   Right sidebar lists all agents as cards; click a card or sprite to highlight
   the matching agent with a white pixel outline (toggle to deselect).
-  See [CREDITS.md](CREDITS.md) for sprite attribution.
+  Header dropdown switches between 5 office backgrounds (selection persisted
+  via localStorage, rendered 1:1 with letterboxing). See [CREDITS.md](CREDITS.md)
+  for sprite & background attribution.
 
 ## Quick Start
 

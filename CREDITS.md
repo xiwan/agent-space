@@ -23,12 +23,17 @@ derived from the open-source project:
 We do not vendor pixel-office source code; only the visual convention is
 re-implemented in `src/pixel/PixelRenderer.js`.
 
-### Background
+### Background — Default Placeholder
 
 `public/pixel/oficina-placeholder.png` is a generated placeholder included
-in this repository. The original `oficina.png` referenced by pixel-office is
-a paid asset by Donarg and is **not** distributed here. The renderer falls
-back to the placeholder automatically if `oficina.png` is absent.
+in this repository as the default fallback background when no Office Designs
+selection is made.
+
+### Office Backgrounds (v2.3.0) — `public/pixel/backgrounds/level{1,2,3,3.5,4}.png`
+
+Five selectable office backgrounds (320×288 / 384×416 / 512×448 / 512×608 /
+640×800 px). Commercial license obtained by the project owner on 2026-05-19.
+Source pack details to be filled in by owner.
 
 ---
 

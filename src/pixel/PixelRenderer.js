@@ -44,7 +44,6 @@ class SpriteSheet {
     this.loaded = false;
     this._loadCount = 0;
     this._total = 1 + NUM_CHARS;
-    this._triedFallback = false;
   }
 
   load() {
@@ -57,21 +56,14 @@ class SpriteSheet {
         }
       };
 
-      // background, fallback 路径在 pixel-office 原版里是先 oficina.png 后 placeholder
-      // 这里直接用 placeholder; 用户如有 oficina.png 可放进 public/pixel/
+      // 默认背景 = placeholder, 后续可由 setBackground(url) 替换
       this.background = new Image();
       this.background.onload = onOne;
       this.background.onerror = () => {
-        if (this._triedFallback) {
-          console.error('[PixelRenderer] background load failed entirely');
-          onOne();
-          return;
-        }
-        this._triedFallback = true;
-        console.warn('[PixelRenderer] oficina.png not found, using placeholder');
-        this.background.src = `${this.basePath}/oficina-placeholder.png`;
+        console.error('[PixelRenderer] placeholder background load failed');
+        onOne();
       };
-      this.background.src = `${this.basePath}/oficina.png`;
+      this.background.src = `${this.basePath}/oficina-placeholder.png`;
 
       for (let i = 0; i < NUM_CHARS; i++) {
         const img = new Image();
@@ -83,6 +75,26 @@ class SpriteSheet {
         img.src = `${this.basePath}/characters/char_${i}.png`;
         this.chars.push(img);
       }
+    });
+  }
+
+  /**
+   * 异步替换背景图 (运行时切换). 加载失败保留旧图.
+   * @param {string} url
+   * @returns {Promise<void>} resolve 表示新图已就位; reject 表示加载失败 (旧图未变)
+   */
+  swapBackground(url) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        this.background = img;
+        resolve();
+      };
+      img.onerror = () => {
+        console.warn(`[PixelRenderer] background swap failed: ${url}, keeping previous`);
+        reject(new Error(`failed to load ${url}`));
+      };
+      img.src = url;
     });
   }
 }
@@ -280,6 +292,20 @@ export class PixelRenderer {
   }
 
   /**
+   * 异步切换背景图. 加载失败时保留旧图, 不抛出 (仅警告).
+   * @param {string | null} url 传 null 表示用 placeholder
+   * @returns {Promise<void>}
+   */
+  async setBackground(url) {
+    const target = url || `${this.assetPath.replace(/\/$/, '')}/oficina-placeholder.png`;
+    try {
+      await this.sheet.swapBackground(target);
+    } catch (e) {
+      // swapBackground 内已经 console.warn, 这里静默
+    }
+  }
+
+  /**
    * 接收 BridgeAdapter 输出的 config, 同步到内部 agent 列表
    */
   setConfig(config) {
@@ -353,11 +379,35 @@ export class PixelRenderer {
     const { ctx, canvas, sheet } = this;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // bg
+    // bg — v2.3.0 100%-up-to-canvas (canvas 已扩到 960×800, 容下最大 L4 = 640×800):
+    //   图 ≤ canvas → 100% 原尺寸居中, 周围黑边 (像素美术 1:1, 永不放大)
+    //   图 > canvas → contain 缩小放下 (理论上不该触发, 仅作为防御性兜底)
     if (sheet.loaded && sheet.background?.complete) {
       const bg = sheet.background;
-      // 背景拉伸到 canvas
-      ctx.drawImage(bg, 0, 0, canvas.width, canvas.height);
+      const bw = bg.naturalWidth || bg.width;
+      const bh = bg.naturalHeight || bg.height;
+      if (bw > 0 && bh > 0) {
+        ctx.fillStyle = '#0a0f1c';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        let dw, dh;
+        if (bw <= canvas.width && bh <= canvas.height) {
+          dw = bw;
+          dh = bh;
+        } else {
+          // 防御性: 万一未来有更大的图, 缩小放下而不是裁切
+          const scale = Math.min(canvas.width / bw, canvas.height / bh);
+          dw = bw * scale;
+          dh = bh * scale;
+        }
+        const dx = Math.floor((canvas.width - dw) / 2);
+        const dy = Math.floor((canvas.height - dh) / 2);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(bg, 0, 0, bw, bh, dx, dy, dw, dh);
+      } else {
+        ctx.fillStyle = '#222';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
     } else {
       ctx.fillStyle = '#222';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
