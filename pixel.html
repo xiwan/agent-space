@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pixel Office — ACP Bridge Agents</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-family: system-ui, -apple-system, sans-serif;
+      overflow: hidden;
+    }
+
+    #pixelApp {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    #pixelHeader {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      background: #1e293b;
+      border-bottom: 1px solid #334155;
+      font-size: 13px;
+    }
+
+    #pixelHeader h1 {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+    }
+
+    #pixelHeader a {
+      color: #60a5fa;
+      text-decoration: none;
+      font-size: 12px;
+    }
+
+    #pixelStatus {
+      font-size: 12px;
+      color: #94a3b8;
+      font-family: monospace;
+    }
+    #pixelStatus[data-kind="ok"]    { color: #34d399; }
+    #pixelStatus[data-kind="error"] { color: #f87171; }
+
+    #pixelStage {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #0a0f1c;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #pixelCanvas {
+      max-width: 100%;
+      max-height: 100%;
+      width: 960px;
+      height: 720px;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      cursor: pointer;
+      box-shadow: 0 0 0 1px #334155, 0 8px 32px rgba(0,0,0,0.5);
+    }
+
+    #pixelInfoCard {
+      display: none;
+      position: absolute;
+      right: 16px;
+      top: 16px;
+      width: 280px;
+      background: #1e293b;
+      border: 1px solid #475569;
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 13px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+      z-index: 10;
+    }
+
+    #pixelInfoCard h3 {
+      font-size: 14px;
+      margin-bottom: 4px;
+    }
+
+    .pixel-info-row {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+      font-size: 12px;
+      align-items: baseline;
+    }
+
+    .pixel-info-row label {
+      color: #94a3b8;
+      min-width: 60px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .pixel-info-row span {
+      color: #e2e8f0;
+      flex: 1;
+      word-break: break-word;
+    }
+
+    .pixel-state {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .pixel-state-busy    { background: #064e3b; color: #6ee7b7; }
+    .pixel-state-idle    { background: #374151; color: #d1d5db; }
+    .pixel-state-offline { background: #1e293b; color: #64748b; }
+    .pixel-state-error   { background: #7f1d1d; color: #fca5a5; }
+
+    #pixelInfoClose {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: transparent;
+      border: 0;
+      color: #94a3b8;
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+    }
+    #pixelInfoClose:hover { color: #fff; }
+  </style>
+</head>
+<body>
+  <div id="pixelApp">
+    <header id="pixelHeader">
+      <h1>PIXEL OFFICE — ACP Bridge</h1>
+      <span id="pixelStatus" data-kind="info">initializing...</span>
+      <a href="/">← Agent Space</a>
+    </header>
+
+    <main id="pixelStage">
+      <canvas id="pixelCanvas" width="960" height="720"></canvas>
+
+      <aside id="pixelInfoCard">
+        <button id="pixelInfoClose" aria-label="close">×</button>
+        <h3 id="pixelInfoName">agent</h3>
+        <span id="pixelInfoState" class="pixel-state">idle</span>
+        <div class="pixel-info-row">
+          <label>desc</label>
+          <span id="pixelInfoDesc"></span>
+        </div>
+        <div class="pixel-info-row">
+          <label>domains</label>
+          <span id="pixelInfoDomains"></span>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script type="module" src="/src/pixel/pixel-main.js"></script>
+</body>
+</html>

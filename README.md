@@ -7,6 +7,15 @@ Pixel-art AI Agent office — real-time visualization of ACP Bridge agents.
 Dual-zone layout: Office (left) + Living Room (right). Agents walk to office when busy, relax in living room when idle.
 Responsive: side-by-side on desktop, stacked on mobile. Draggable divider between panels.
 
+## Views
+
+Two independent entry points share the same Bridge backend:
+
+- **`/`** — Phaser 4 dual-zone office (default).
+- **`/pixel.html`** — standalone Canvas pixel-office viewer (v2.1.0). Lighter weight,
+  driven by `/health` + `/health/agents` for real-time per-session `busy` state.
+  See [CREDITS.md](CREDITS.md) for sprite attribution.
+
 ## Quick Start
 
 ```bash
@@ -14,7 +23,8 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173 in your browser.
+Open http://localhost:5173 in your browser. The pixel viewer is at
+http://localhost:5173/pixel.html.
 
 ### Production
 
