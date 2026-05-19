@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { PixelRenderer } from '../src/pixel/PixelRenderer.js';
+import { PixelRenderer, BUSY_EMOJI_THEMES, pickBusyEmojiPool, pickBusyEmojis } from '../src/pixel/PixelRenderer.js';
 
 // happy-dom doesn't support canvas 2d context; mock it
 function makeCanvas() {
@@ -369,16 +369,25 @@ describe('PixelRenderer v2.6.0', () => {
       expect(a.bubbleUntil).toBeGreaterThan(performance.now());
     });
 
-    it('busy agent uses description as bubble text', () => {
+    it('busy agent uses emoji from theme pool (v2.10.0, replaces v2.7.0 description)', () => {
       renderer.agents = [{
         name: 'bot', cx: 100, cy: 100, tx: 100, ty: 100,
         state: 'busy', facing: 'down', walking: false, sitting: false,
         path: null, pathIdx: 0, pathGridSize: 16, wanderUntil: Number.MAX_SAFE_INTEGER,
         bubbleText: null, bubbleUntil: 0, bubbleNextAt: 0,
-        description: 'compiling rust', color: 0,
+        description: 'compiling rust',
+        domains: ['backend', 'rust'], color: 0,
       }];
       renderer._tick();
-      expect(renderer.agents[0].bubbleText).toBe('compiling rust');
+      const text = renderer.agents[0].bubbleText;
+      expect(text).not.toBeNull();
+      // 不该是 description 文本
+      expect(text).not.toBe('compiling rust');
+      // 应当是 1-5 个 emoji 紧贴拼接 (用 Array.from 按 codepoint 计算字符数)
+      const codepoints = Array.from(text);
+      // emoji 经常是多 codepoint (variation selectors / ZWJ), 这里只断言非空 + 包含至少 1 个非 ASCII char
+      expect(text.length).toBeGreaterThan(0);
+      expect(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(text)).toBe(true);
     });
 
     it('expired bubble is hidden and cooldown is set in the future', () => {
@@ -424,21 +433,19 @@ describe('PixelRenderer v2.6.0', () => {
       expect(renderer.agents[0].bubbleText).toBeNull();
     });
 
-    it('busy agent without description schedules a short retry instead of empty bubble', () => {
-      const before = performance.now();
+    it('busy agent without domains falls back to generic emoji pool (v2.10.0)', () => {
       renderer.agents = [{
         name: 'bot', cx: 100, cy: 100, tx: 100, ty: 100,
         state: 'busy', facing: 'down', walking: false, sitting: false,
         path: null, pathIdx: 0, pathGridSize: 16, wanderUntil: Number.MAX_SAFE_INTEGER,
         bubbleText: null, bubbleUntil: 0, bubbleNextAt: 0,
-        description: '', color: 0,
+        description: '', domains: [], color: 0,
       }];
       renderer._tick();
-      const a = renderer.agents[0];
-      expect(a.bubbleText).toBeNull();
-      // retry within ~1s
-      expect(a.bubbleNextAt).toBeGreaterThanOrEqual(before + 990);
-      expect(a.bubbleNextAt).toBeLessThanOrEqual(before + 1100);
+      const text = renderer.agents[0].bubbleText;
+      // 不再"短重试", generic 池非空, 应当出 emoji
+      expect(text).not.toBeNull();
+      expect(text.length).toBeGreaterThan(0);
     });
 
     it('state change in setConfig clears bubbleText/Until/NextAt (immediate re-bubble allowed)', () => {
@@ -455,6 +462,180 @@ describe('PixelRenderer v2.6.0', () => {
       expect(a2.bubbleText).toBeNull();
       expect(a2.bubbleUntil).toBe(0);
       expect(a2.bubbleNextAt).toBe(0);
+    });
+  });
+
+  // === v2.10.0: enqueueBubble (强制气泡, 用于 CommandHistory output) ===
+
+  describe('enqueueBubble (v2.10.0)', () => {
+    let renderer;
+    beforeEach(() => {
+      renderer = new PixelRenderer(makeCanvas());
+      renderer.setConfig({ agents: [{ name: 'kiro', x: 100, y: 100, state: 'idle', color: 0 }] });
+    });
+
+    it('sets bubbleText immediately for matching agent', () => {
+      renderer.enqueueBubble('kiro', 'hello there');
+      const a = renderer.agents[0];
+      expect(a.bubbleText).toBe('hello there');
+      expect(a.bubbleUntil).toBeGreaterThan(0);
+    });
+
+    it('lifetime is 4-6 seconds (longer than idle chitchat 3-5s)', () => {
+      const before = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      renderer.enqueueBubble('kiro', 'x');
+      const a = renderer.agents[0];
+      const lifetime = a.bubbleUntil - before;
+      expect(lifetime).toBeGreaterThanOrEqual(3990);
+      expect(lifetime).toBeLessThanOrEqual(6010);
+    });
+
+    it('cooldown after forced bubble prevents instant chitchat takeover', () => {
+      renderer.enqueueBubble('kiro', 'output');
+      const a = renderer.agents[0];
+      // bubbleNextAt 应当晚于 bubbleUntil (= 不会到期就被新 chitchat 立刻覆盖)
+      expect(a.bubbleNextAt).toBeGreaterThan(a.bubbleUntil);
+    });
+
+    it('unknown agent name → no-op (no throw)', () => {
+      expect(() => renderer.enqueueBubble('ghost', 'x')).not.toThrow();
+      // 现有 agent 不受影响
+      expect(renderer.agents[0].bubbleText).toBeNull();
+    });
+
+    it('empty/null text → no-op', () => {
+      renderer.enqueueBubble('kiro', '');
+      expect(renderer.agents[0].bubbleText).toBeNull();
+      renderer.enqueueBubble('kiro', null);
+      expect(renderer.agents[0].bubbleText).toBeNull();
+    });
+  });
+
+  // === v2.10.0: busy emoji picker (替代 description) ===
+
+  describe('pickBusyEmojiPool (v2.10.0)', () => {
+    it('returns generic pool when domains empty/null/missing', () => {
+      expect(pickBusyEmojiPool([])).toEqual(BUSY_EMOJI_THEMES.generic);
+      expect(pickBusyEmojiPool(null)).toEqual(BUSY_EMOJI_THEMES.generic);
+      expect(pickBusyEmojiPool(undefined)).toEqual(BUSY_EMOJI_THEMES.generic);
+    });
+
+    it('matches coding domains (frontend, backend, python, etc)', () => {
+      const pool = pickBusyEmojiPool(['frontend']);
+      // coding theme 必含 💻
+      expect(pool).toContain('💻');
+    });
+
+    it('matches testing domain', () => {
+      const pool = pickBusyEmojiPool(['qa']);
+      expect(pool).toContain('🧪');
+    });
+
+    it('matches ops domain', () => {
+      const pool = pickBusyEmojiPool(['devops']);
+      expect(pool).toContain('🚀');
+    });
+
+    it('matches docs domain', () => {
+      const pool = pickBusyEmojiPool(['docs']);
+      expect(pool).toContain('📝');
+    });
+
+    it('matches data domain', () => {
+      const pool = pickBusyEmojiPool(['data']);
+      expect(pool).toContain('📊');
+    });
+
+    it('multiple domains union the pools', () => {
+      const pool = pickBusyEmojiPool(['frontend', 'qa']);
+      expect(pool).toContain('💻'); // coding
+      expect(pool).toContain('🧪'); // testing
+    });
+
+    it('unknown domains fall back to generic pool', () => {
+      const pool = pickBusyEmojiPool(['blockchain']);
+      expect(pool).toEqual(BUSY_EMOJI_THEMES.generic);
+    });
+
+    it('pool elements are unique (Set semantic across themes)', () => {
+      const pool = pickBusyEmojiPool(['frontend', 'backend']); // 都映射到 coding, 不该有 duplicate
+      const unique = new Set(pool);
+      expect(pool.length).toBe(unique.size);
+    });
+  });
+
+  describe('pickBusyEmojis (v2.10.0)', () => {
+    it('returns 1-5 emojis joined without separator', () => {
+      for (let i = 0; i < 50; i++) {
+        const text = pickBusyEmojis(['coding']);
+        // 至少 1 个 emoji codepoint
+        expect(text.length).toBeGreaterThan(0);
+        // 用 Array.from 拆 codepoint, 数量在 1-5 (考虑 ZWJ / variation selector 可能多 codepoint, 这里宽松断言)
+        const cps = Array.from(text);
+        expect(cps.length).toBeGreaterThanOrEqual(1);
+        expect(cps.length).toBeLessThanOrEqual(10); // 5 emoji * up to 2 codepoints (含 variation selector)
+      }
+    });
+
+    it('all picked emojis come from the matched pool', () => {
+      const pool = new Set(pickBusyEmojiPool(['coding']));
+      for (let i = 0; i < 30; i++) {
+        const text = pickBusyEmojis(['coding']);
+        // 把字符串切成 emoji 数组 (按 Array.from 的 codepoint 切, 但 emoji 可能多 codepoint)
+        // 简化检查: pool 里的每个 emoji 出现在 text 里至少 0 次, 且 text 里的 codepoint 都属于某个 emoji
+        // 这里改用断言: text 里每个 emoji 必须能在 pool 里找到
+        // 用一个更简单的检查 — 把 pool 的 emoji 按长度倒序贪婪地 strip text
+        let rest = text;
+        const sorted = [...pool].sort((a, b) => b.length - a.length);
+        while (rest.length > 0) {
+          const found = sorted.find(e => rest.startsWith(e));
+          if (!found) {
+            throw new Error(`emoji in '${text}' not in pool: rest='${rest}'`);
+          }
+          rest = rest.slice(found.length);
+        }
+      }
+    });
+
+    it('does not repeat emojis within one bubble', () => {
+      // 用 coding pool (8 个 emoji), 每次抽至多 5 个 — 不应该重复
+      // 由于 pickBusyCount 随机, 跑 100 次找没重复的最大长度抽样
+      for (let i = 0; i < 100; i++) {
+        const text = pickBusyEmojis(['coding']);
+        // 简单: pool 的每个 emoji 在 text 里最多出现 1 次
+        const pool = pickBusyEmojiPool(['coding']);
+        for (const e of pool) {
+          const count = text.split(e).length - 1;
+          expect(count).toBeLessThanOrEqual(1);
+        }
+      }
+    });
+
+    it('count distribution skews toward 1-3 (probabilistic, sample-based)', () => {
+      // 跑 1000 次, 大致符合 1=30% / 2=40% / 3=20% / 4=8% / 5=2%
+      // 用宽容阈值避免 flaky
+      const counts = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, other: 0 };
+      // 只能用 ASCII 的 generic pool 的元素来 split — 用一个独立 pool 保证 emoji 边界清晰
+      // 这里换个策略: 用 stringWidth 估算 — 直接用 generic pool 的元素逐个 strip 计数
+      const pool = pickBusyEmojiPool([]).sort((a, b) => b.length - a.length);
+      for (let i = 0; i < 1000; i++) {
+        let rest = pickBusyEmojis([]);
+        let n = 0;
+        while (rest.length > 0) {
+          const found = pool.find(e => rest.startsWith(e));
+          if (!found) break;
+          rest = rest.slice(found.length);
+          n++;
+        }
+        if (n >= 1 && n <= 5) counts[n]++;
+        else counts.other++;
+      }
+      // 基本分布: 1 应是最多 (30%) 之一, 2 应该 ≥ 1 的频次 / 2
+      // 阈值放宽避免 flaky:
+      expect(counts.other).toBeLessThan(50);  // 几乎所有都应在 1-5 范围
+      expect(counts[1]).toBeGreaterThan(150);  // 至少 15% (放宽自 30%)
+      expect(counts[2]).toBeGreaterThan(200);  // 至少 20% (放宽自 40%)
+      expect(counts[5]).toBeLessThan(100);     // 至多 10% (实际 2%)
     });
   });
 });

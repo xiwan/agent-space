@@ -15,6 +15,7 @@ describe('Sidebar (v2.2.0)', () => {
   let sidebar;
 
   beforeEach(() => {
+    try { localStorage.clear(); } catch {}
     container = document.createElement('div');
     onToggle = vi.fn();
     sidebar = new Sidebar(container, { onToggle });
@@ -24,8 +25,13 @@ describe('Sidebar (v2.2.0)', () => {
     expect(() => new Sidebar(null)).toThrow(/container/);
   });
 
-  it('renders empty initially', () => {
-    expect(container.children.length).toBe(0);
+  it('renders empty initially (no cards, but shell with tabs exists)', () => {
+    expect(container.querySelectorAll('.pixel-card').length).toBe(0);
+    // v2.10.0: shell 自带 tabs + agents/history 容器
+    expect(container.querySelector('.sidebar-tabs')).not.toBeNull();
+    expect(container.querySelectorAll('.sidebar-tab').length).toBe(2);
+    expect(container.querySelector('.sidebar-agents')).not.toBeNull();
+    expect(container.querySelector('.sidebar-history')).not.toBeNull();
   });
 
   it('setAgents renders one card per agent in order', () => {
@@ -149,5 +155,45 @@ describe('Sidebar (v2.2.0)', () => {
     expect(container.querySelectorAll('.pixel-card').length).toBe(initialCount);
     sidebar.setSelected(null);
     expect(container.querySelectorAll('.pixel-card').length).toBe(initialCount);
+  });
+
+  // === v2.10.0: tab 切换 ===
+
+  it('v2.10.0: default tab is agents, agents pane visible, history hidden', () => {
+    expect(sidebar.getTab()).toBe('agents');
+    const a = container.querySelector('.sidebar-agents');
+    const h = container.querySelector('.sidebar-history');
+    expect(a.style.display).not.toBe('none');
+    expect(h.style.display).toBe('none');
+  });
+
+  it('v2.10.0: clicking History tab swaps panes', () => {
+    const histTab = container.querySelector('[data-tab="history"]');
+    histTab.click();
+    expect(sidebar.getTab()).toBe('history');
+    expect(container.querySelector('.sidebar-agents').style.display).toBe('none');
+    expect(container.querySelector('.sidebar-history').style.display).not.toBe('none');
+    expect(histTab.classList.contains('active')).toBe(true);
+  });
+
+  it('v2.10.0: getHistoryContainer returns the history pane', () => {
+    const h = sidebar.getHistoryContainer();
+    expect(h).not.toBeNull();
+    expect(h.classList.contains('sidebar-history')).toBe(true);
+  });
+
+  it('v2.10.0: tab choice persists to localStorage', () => {
+    container.querySelector('[data-tab="history"]').click();
+    expect(localStorage.getItem('pixel.sidebarTab')).toBe('history');
+    container.querySelector('[data-tab="agents"]').click();
+    expect(localStorage.getItem('pixel.sidebarTab')).toBe('agents');
+  });
+
+  it('v2.10.0: onTabChange fires on tab switch', () => {
+    const onTabChange = vi.fn();
+    const c2 = document.createElement('div');
+    new Sidebar(c2, { onTabChange });
+    c2.querySelector('[data-tab="history"]').click();
+    expect(onTabChange).toHaveBeenCalledWith('history');
   });
 });

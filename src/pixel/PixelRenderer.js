@@ -56,6 +56,77 @@ function pickIdleChat() {
   return IDLE_CHITCHAT[Math.floor(Math.random() * IDLE_CHITCHAT.length)];
 }
 
+// v2.10.0: busy agent emoji 词库 (按工作主题分组)
+// 设计目标: 比 description 文本更生动 / 像素气泡更窄 / 风格统一
+export const BUSY_EMOJI_THEMES = {
+  coding:    ['💻', '⌨️', '🖱️', '🐛', '🔧', '⚙️', '📦', '🧩'],
+  thinking:  ['🤔', '💭', '🧠', '💡', '✏️', '📐', '🎨'],
+  testing:   ['🧪', '🔍', '✅', '❌', '⚗️', '🎯'],
+  ops:       ['🚀', '🛠️', '📡', '☁️', '🐳', '⚡', '🔥'],
+  docs:      ['📝', '📚', '📖', '✍️', '📋', '🗂️'],
+  data:      ['📊', '📈', '🔢', '🗃️', '🧮'],
+  generic:   ['⚙️', '🔨', '💻', '📊', '🎯', '🔍', '✏️', '🧩'],
+};
+
+// domain 关键词 → theme 映射 (一个 domain 可命中多个 theme, 取并集池)
+const DOMAIN_THEME_RULES = [
+  { theme: 'coding',   pattern: /\b(frontend|ui|web|react|vue|backend|api|server|python|java|go|rust|js|typescript|node|cli|code|coding|debug|fix)\b/i },
+  { theme: 'thinking', pattern: /\b(design|architect|plan|brainstorm|spec|review)\b/i },
+  { theme: 'testing',  pattern: /\b(test|qa|spec|verify|validate|check)\b/i },
+  { theme: 'ops',      pattern: /\b(deploy|devops|infra|aws|k8s|docker|kubernetes|ci|cd|build|release|deploy|ops|admin)\b/i },
+  { theme: 'docs',     pattern: /\b(doc|docs|writing|markdown|md|readme|wiki|guide)\b/i },
+  { theme: 'data',     pattern: /\b(data|sql|analytics|ml|machine|stats|metric|database|db)\b/i },
+];
+
+/**
+ * v2.10.0: 根据 agent.domains 选择 emoji 池
+ * @param {string[]} domains
+ * @returns {string[]} emoji 数组 (可能是多个 theme 的并集; 没匹配返回 generic)
+ */
+export function pickBusyEmojiPool(domains) {
+  const themes = new Set();
+  for (const d of (domains || [])) {
+    for (const rule of DOMAIN_THEME_RULES) {
+      if (rule.pattern.test(d)) themes.add(rule.theme);
+    }
+  }
+  if (themes.size === 0) return BUSY_EMOJI_THEMES.generic.slice();
+  // 取并集 + 去重 (Set 保持像素风稳定)
+  const merged = new Set();
+  for (const theme of themes) {
+    for (const emoji of BUSY_EMOJI_THEMES[theme] || []) merged.add(emoji);
+  }
+  return [...merged];
+}
+
+// 数量分布 1-5: 1=30%, 2=40%, 3=20%, 4=8%, 5=2%
+const BUSY_COUNT_CDF = [0.30, 0.70, 0.90, 0.98, 1.00];
+function pickBusyCount() {
+  const r = Math.random();
+  for (let i = 0; i < BUSY_COUNT_CDF.length; i++) {
+    if (r < BUSY_COUNT_CDF[i]) return i + 1;
+  }
+  return 1;
+}
+
+/**
+ * v2.10.0: 给一个 busy agent 生成气泡文本 (1-5 个 emoji 紧贴拼接).
+ * @param {string[]} domains
+ * @returns {string}
+ */
+export function pickBusyEmojis(domains) {
+  const pool = pickBusyEmojiPool(domains);
+  if (pool.length === 0) return '';
+  const n = Math.min(pickBusyCount(), pool.length);
+  // Fisher-Yates 截前 n 个: 不重复抽取
+  const arr = pool.slice();
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr.slice(0, n).join('');
+}
+
 class SpriteSheet {
   constructor(basePath) {
     this.basePath = basePath.replace(/\/$/, '');
@@ -449,6 +520,25 @@ export class PixelRenderer {
   }
 
   /**
+   * v2.10.0: 强制在指定 agent 头顶弹一条气泡 (覆盖 idle/busy 自然轮换).
+   * 4-6 秒寿命 (略长于 idle chitchat 的 3-5s, 让用户能看清 agent 输出).
+   * 气泡到期后正常恢复 idle/busy 词库循环.
+   *
+   * @param {string} name
+   * @param {string} text — 全文; 渲染端会按 v2.7.0 规则截断 24 字符
+   */
+  enqueueBubble(name, text) {
+    const a = this.agents.find(x => x.name === name);
+    if (!a) return;
+    if (!text) return;
+    const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    a.bubbleText = String(text);
+    a.bubbleUntil = now + 4000 + Math.random() * 2000; // 4-6s
+    // 让冷却从此刻起正常算 (避免立刻被新 chitchat 抢)
+    a.bubbleNextAt = a.bubbleUntil + 1500;
+  }
+
+  /**
    * v2.4.0: 设置编辑器当前 tool / agent (仅影响 overlay 高亮; 实际涂刷由 MapEditor 负责)
    */
   setEditCursor(tool, agentName) {
@@ -563,13 +653,13 @@ export class PixelRenderer {
       }
       if (!a.bubbleText && now >= (a.bubbleNextAt || 0) && (a.state === 'idle' || a.state === 'busy')) {
         const text = a.state === 'busy'
-          ? (a.description || '').trim()
+          ? pickBusyEmojis(a.domains)  // v2.10.0: emoji 取代 description
           : pickIdleChat();
         if (text) {
           a.bubbleText = text;
           a.bubbleUntil = now + 3000 + Math.random() * 2000;
         } else {
-          // busy but no description yet — short retry
+          // busy 但 emoji 池都空 (理论不会, generic 池非空) — short retry
           a.bubbleNextAt = now + 1000;
         }
       }

@@ -17,6 +17,9 @@ import { BridgePoller } from './BridgeAdapter.js';
 import { PixelRenderer } from './PixelRenderer.js';
 import { Sidebar } from './Sidebar.js';
 import { MapEditor } from './MapEditor.js';
+import { CommandComposer } from './CommandComposer.js';
+import { CommandClient } from './CommandClient.js';
+import { CommandHistory } from './CommandHistory.js';
 import {
   loadMapConfig, saveMapConfig, emptyMapConfig,
   loadMapConfigAsync, saveMapConfigAsync,
@@ -49,8 +52,9 @@ async function main() {
     statusEl.dataset.kind = kind;
   };
 
-  const sidebarEl = document.getElementById('pixelSidebarCards');
-  if (!sidebarEl) { console.error('[pixel] #pixelSidebarCards not found'); return; }
+  const sidebarEl = document.getElementById('pixelSidebar');
+  if (!sidebarEl) { console.error('[pixel] #pixelSidebar not found'); return; }
+  const composerEl = document.getElementById('pixelComposer');
 
   const bgSelectEl = document.getElementById('pixelBgSelect');
   const editBtnEl = document.getElementById('pixelEditBtn');
@@ -96,6 +100,35 @@ async function main() {
   const sidebar = new Sidebar(sidebarEl, {
     onToggle: (name) => toggleSelected(name),
   });
+
+  // === v2.10.0: Command Composer + Client + History ===
+  const commandClient = new CommandClient();
+  const historyContainer = sidebar.getHistoryContainer();
+  const history = historyContainer ? new CommandHistory(historyContainer, {
+    client: commandClient,
+    onAgentOutput: (name, text) => {
+      if (name && text) renderer.enqueueBubble(name, text);
+    },
+  }) : null;
+
+  const composer = composerEl ? new CommandComposer(composerEl, {
+    onSubmit: async (payload) => {
+      // 推断 ctx
+      const state = composer.getState();
+      const kind = payload.endpoint === '/api/runs' ? 'run'
+                 : payload.endpoint === '/api/jobs' ? 'job'
+                 : 'pipeline';
+      const agents = [...state.agents];
+      const prompt = state.prompt;
+      const mode = state.mode;
+      const response = await commandClient.submit(payload);
+      if (history) history.pushSubmission({ kind, mode, agents, prompt }, response);
+      // 切换到 history tab 让用户立刻看到反馈
+      // (非自动: 留 sidebar tab 选择给用户; 但状态条提示 + 卡片在 history 里等着)
+    },
+  }) : null;
+
+  if (history) history.start();
 
   const editor = (editBtnEl && editToolbarEl) ? new MapEditor(canvas, editToolbarEl, {
     onSave: async () => {
@@ -263,6 +296,7 @@ async function main() {
 
     renderer.setConfig(cfg);
     sidebar.setAgents(lastAgents);
+    if (composer) composer.setAvailableAgents(lastAgents);
 
     if (selectedName && !lastAgents.find(a => a.name === selectedName)) {
       setSelected(null);
