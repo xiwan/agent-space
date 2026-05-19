@@ -116,7 +116,11 @@ export function defaultSlots(zone, n) {
  * @param {object} heartbeat     — GET /heartbeat (仅用 description/domains, 可为 null)
  * @param {object} healthAgents  — GET /health/agents (per-session 实时 state, 可为 null)
  * @param {object} pipelines     — GET /pipelines (pty busy 兜底, 可为 null)
- * @param {object} opts          — { officeSlots, receptionSlots }
+ * @param {object} opts          — { officeSlots, receptionSlots, mapConfig, getTargetCell, cellToPx }
+ *
+ * mapConfig 路径 (v2.4.0):
+ *   传入 mapConfig + 注入的 getTargetCell/cellToPx (依赖反转, 避免循环依赖) →
+ *   状态切换时优先用区域 + 哈希分配; 单 agent 在该 zone 没配置 → fallback 到 defaultSlots.
  */
 export function adaptToPixelConfig(health, heartbeat, healthAgents, pipelines, opts = {}) {
   const enabledAgents = (health?.agents ?? [])
@@ -126,6 +130,9 @@ export function adaptToPixelConfig(health, heartbeat, healthAgents, pipelines, o
 
   const officeSlots    = opts.officeSlots    ?? defaultSlots('office',    enabledAgents.length || 1);
   const receptionSlots = opts.receptionSlots ?? defaultSlots('reception', enabledAgents.length || 1);
+  const mapConfig      = opts.mapConfig      ?? null;
+  const getTargetCell  = opts.getTargetCell  ?? null;
+  const cellToPx       = opts.cellToPx       ?? null;
 
   const pipelineRunningSet = extractBusyAgentsFromPipelines(pipelines);
 
@@ -134,15 +141,29 @@ export function adaptToPixelConfig(health, heartbeat, healthAgents, pipelines, o
     const hbMeta = heartbeat?.snapshot?.agents?.[a.name] ?? {};
     const color = idx % SPRITE_COUNT;
 
-    const slotPool = (status === 'busy' || status === 'error') ? officeSlots : receptionSlots;
-    const slot = slotPool[idx % slotPool.length];
+    // v2.4.0: 优先 mapConfig zone; 没配置则 fallback 到 defaultSlots
+    let x, y;
+    if (mapConfig && getTargetCell && cellToPx) {
+      const cell = getTargetCell(a.name, status, mapConfig);
+      if (cell) {
+        const [px, py] = cellToPx(cell[0], cell[1], mapConfig.gridSize);
+        x = px;
+        y = py;
+      }
+    }
+    if (x === undefined) {
+      const slotPool = (status === 'busy' || status === 'error') ? officeSlots : receptionSlots;
+      const slot = slotPool[idx % slotPool.length];
+      x = slot.x;
+      y = slot.y;
+    }
 
     return {
       id: idx,
       name: a.name,
       color,
-      x: slot.x,
-      y: slot.y,
+      x,
+      y,
       state: status,
       active: status !== 'offline',
       description: hbMeta.description || '',
@@ -178,6 +199,21 @@ export class BridgePoller {
     this._aborted = false;
     this._tickCount = 0;
     this._cachedHeartbeat = null;
+
+    // v2.4.0: mapConfig + helper 函数 (依赖反转, 由 caller 注入避免循环 import)
+    this._mapConfig = null;
+    this._getTargetCell = null;
+    this._cellToPx = null;
+  }
+
+  /**
+   * v2.4.0: 注入/替换 mapConfig (用户编辑后保存或切换背景时调用).
+   * 不传或传 null 表示不使用 mapConfig (回退 defaultSlots).
+   */
+  setMapConfig(mapConfig, getTargetCell, cellToPx) {
+    this._mapConfig = mapConfig || null;
+    this._getTargetCell = getTargetCell || null;
+    this._cellToPx = cellToPx || null;
   }
 
   start() {
@@ -227,7 +263,11 @@ export class BridgePoller {
         return;
       }
 
-      const cfg = adaptToPixelConfig(health, this._cachedHeartbeat, healthAgents, pipelines);
+      const cfg = adaptToPixelConfig(health, this._cachedHeartbeat, healthAgents, pipelines, {
+        mapConfig: this._mapConfig,
+        getTargetCell: this._getTargetCell,
+        cellToPx: this._cellToPx,
+      });
       this.onConfig(cfg);
     } catch (e) {
       this.onError(e);

@@ -7,6 +7,10 @@
  *   - 只保留: 画背景 + 画带方向/行走动画的角色 sprite
  *   - 状态变化时, 角色用线性插值平滑走到目标位置
  *
+ * v2.4.0:
+ *   - 走路从直线插值改为 path-based (path[] 由外部 setConfig 时附在 spec.path 上, 来自 PathFinder)
+ *   - 编辑模式: hideSprites + drawEditOverlay (grid 线 + obstacles + zones)
+ *
  * Sprite 表 (来自 pixel-office, 112x96, 7 列 × 3 行, 每帧 16x32):
  *   行 0 = 朝下 (down/front)
  *   行 1 = 朝上 (up/back)
@@ -276,6 +280,12 @@ export class PixelRenderer {
     this._lastConfigByName = {};
     this._selectedName = null;
 
+    // v2.4.0: 编辑模式状态
+    this._editMode = false;
+    this._mapConfig = null;        // 在编辑模式下要画的 obstacles/zones
+    this._editTool = null;         // 'clear' | 'blocked' | 'home' | 'work' | 'idle'
+    this._editAgent = null;
+
     canvas.addEventListener('click', (e) => this._handleClick(e));
   }
 
@@ -306,7 +316,12 @@ export class PixelRenderer {
   }
 
   /**
-   * 接收 BridgeAdapter 输出的 config, 同步到内部 agent 列表
+   * 接收 BridgeAdapter 输出的 config, 同步到内部 agent 列表.
+   *
+   * v2.4.0: spec.path 可选 — 由外部 (pixel-main) 在 mapConfig 模式下用 PathFinder
+   * 计算好的 [[c,r],...] 路径 (单位: cell). 有 path 时, 走 path; 无 path 时, 直线插值.
+   *
+   * @param config { agents: [{ name, x, y, state, ..., path?: [[c,r],...] }] }
    */
   setConfig(config) {
     const incoming = config.agents || [];
@@ -323,19 +338,50 @@ export class PixelRenderer {
         : prev.facing;
       return {
         ...prev,
-        ...spec,                 // overwrite x/y/state/active/description/domains
-        cx: prev.cx,             // 保留当前插值位置
+        ...spec,
+        cx: prev.cx,
         cy: prev.cy,
-        tx: spec.x,              // 新目标
+        tx: spec.x,
         ty: spec.y,
         facing: newFacing,
         walking: moved,
         sitting: !moved && spec.state === 'busy',
+        // v2.4.0: 路径 - cell 序列 (px 中心点会在 _tick 中按 gridSize 转换); null = 直线插值
+        path: spec.path && spec.path.length > 1 ? spec.path.slice() : null,
+        pathIdx: 0,
+        pathGridSize: spec.pathGridSize || 16,
       };
     });
 
     this.agents = next;
     this._lastConfigByName = Object.fromEntries(next.map(a => [a.name, a]));
+  }
+
+  /**
+   * v2.4.0: 切换编辑模式. 编辑模式下 sprite 隐藏, 显示 grid + obstacles + zones overlay.
+   * @param {boolean} on
+   * @param {object} mapConfig
+   */
+  setEditMode(on, mapConfig = null) {
+    this._editMode = !!on;
+    this._mapConfig = mapConfig;
+  }
+
+  /**
+   * v2.4.0: 编辑器实时改 mapConfig 时通知 renderer 重绘 (mapConfig 是同一对象引用,
+   * mutate 即可被下一帧看到, 无需特殊调用).
+   * 此 API 留给以后切对象引用时使用.
+   */
+  setMapConfig(mapConfig) {
+    this._mapConfig = mapConfig;
+  }
+
+  /**
+   * v2.4.0: 设置编辑器当前 tool / agent (仅影响 overlay 高亮; 实际涂刷由 MapEditor 负责)
+   */
+  setEditCursor(tool, agentName) {
+    this._editTool = tool || null;
+    this._editAgent = agentName || null;
   }
 
   start() {
@@ -358,15 +404,45 @@ export class PixelRenderer {
     this.frame++;
     const SPEED = 1.5; // 每帧像素
     for (const a of this.agents) {
-      const dx = a.tx - a.cx;
-      const dy = a.ty - a.cy;
+      // v2.4.0: 有 path 则走 path (逐 cell 插值); 无 path 退化为直线插值
+      let stepX, stepY;
+      if (a.path && a.pathIdx < a.path.length) {
+        const [pc, pr] = a.path[a.pathIdx];
+        const gs = a.pathGridSize;
+        stepX = pc * gs + gs / 2;
+        stepY = pr * gs + gs / 2;
+      } else {
+        stepX = a.tx;
+        stepY = a.ty;
+      }
+
+      const dx = stepX - a.cx;
+      const dy = stepY - a.cy;
       const dist = Math.hypot(dx, dy);
+
       if (dist < SPEED) {
-        a.cx = a.tx;
-        a.cy = a.ty;
-        if (a.walking) {
-          a.walking = false;
-          a.sitting = a.state === 'busy';
+        a.cx = stepX;
+        a.cy = stepY;
+        // 如果是 path, 推进到下一个 cell
+        if (a.path && a.pathIdx < a.path.length - 1) {
+          a.pathIdx++;
+          // 朝向更新: 看下一段方向
+          const [nc, nr] = a.path[a.pathIdx];
+          const ng = a.pathGridSize;
+          const nx = nc * ng + ng / 2;
+          const ny = nr * ng + ng / 2;
+          if (Math.abs(nx - a.cx) > Math.abs(ny - a.cy)) {
+            a.facing = nx > a.cx ? 'right' : 'left';
+          } else {
+            a.facing = ny > a.cy ? 'down' : 'up';
+          }
+        } else {
+          // 到达终点
+          if (a.walking) {
+            a.walking = false;
+            a.sitting = a.state === 'busy';
+            a.path = null;
+          }
         }
       } else {
         a.cx += (dx / dist) * SPEED;
@@ -413,6 +489,12 @@ export class PixelRenderer {
       ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
 
+    // v2.4.0: 编辑模式 → 画 grid + obstacles + zones overlay, sprite 隐藏
+    if (this._editMode) {
+      this._drawEditOverlay();
+      return;
+    }
+
     // y-sort agents (脚部 y 越大越靠前)
     const sorted = [...this.agents].sort((a, b) => a.cy - b.cy);
 
@@ -439,6 +521,78 @@ export class PixelRenderer {
       // name + state label
       this._drawLabel(a);
     }
+  }
+
+  /**
+   * v2.4.0: 编辑模式 overlay
+   *   - 半透明 grid 线
+   *   - obstacles: 红色填充
+   *   - zones: 蓝/绿/黄 (home/work/idle), 当前 _editAgent 高亮
+   *   - 当前选中 agent 之外的 zone 半透明
+   */
+  _drawEditOverlay() {
+    const { ctx, canvas } = this;
+    const cfg = this._mapConfig;
+
+    // 1. 半透明遮罩 (让背景仍可见但变暗)
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    if (!cfg) {
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 14px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('No map config — start drawing', canvas.width / 2, canvas.height / 2);
+      return;
+    }
+
+    const gs = cfg.gridSize;
+
+    // 2. obstacles
+    ctx.fillStyle = 'rgba(239, 68, 68, 0.5)';
+    for (let r = 0; r < cfg.rows; r++) {
+      for (let c = 0; c < cfg.cols; c++) {
+        if (cfg.obstacles[r][c]) {
+          ctx.fillRect(c * gs, r * gs, gs, gs);
+        }
+      }
+    }
+
+    // 3. zones (filter: only 当前 _editAgent, 否则全部半透明)
+    const ZONE_COLORS = {
+      home: 'rgba(59, 130, 246, 0.55)',  // blue
+      work: 'rgba(34, 197, 94, 0.55)',   // green
+      idle: 'rgba(234, 179, 8, 0.55)',   // yellow
+    };
+    const ZONE_COLORS_DIM = {
+      home: 'rgba(59, 130, 246, 0.20)',
+      work: 'rgba(34, 197, 94, 0.20)',
+      idle: 'rgba(234, 179, 8, 0.20)',
+    };
+    for (const zoneKey of ['home', 'work', 'idle']) {
+      const zone = cfg.zones[zoneKey] || {};
+      for (const [agentName, cells] of Object.entries(zone)) {
+        const isActive = !this._editAgent || agentName === this._editAgent;
+        ctx.fillStyle = isActive ? ZONE_COLORS[zoneKey] : ZONE_COLORS_DIM[zoneKey];
+        for (const [c, r] of cells) {
+          ctx.fillRect(c * gs, r * gs, gs, gs);
+        }
+      }
+    }
+
+    // 4. grid 线
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let c = 0; c <= cfg.cols; c++) {
+      ctx.moveTo(c * gs, 0);
+      ctx.lineTo(c * gs, cfg.rows * gs);
+    }
+    for (let r = 0; r <= cfg.rows; r++) {
+      ctx.moveTo(0, r * gs);
+      ctx.lineTo(cfg.cols * gs, r * gs);
+    }
+    ctx.stroke();
   }
 
   _drawLabel(a) {
