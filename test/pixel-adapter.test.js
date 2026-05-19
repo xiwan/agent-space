@@ -4,6 +4,7 @@ import {
   deriveStatus,
   defaultSlots,
   adaptToPixelConfig,
+  extractBusyAgentsFromPipelines,
 } from '../src/pixel/BridgeAdapter.js';
 
 // === 测试夹具 ===
@@ -334,5 +335,170 @@ describe('adaptToPixelConfig', () => {
     expect(counts.busy).toBe(1);
     expect(counts.idle).toBe(4);
     expect(cfg.agents.find(a => a.name === 'claude').state).toBe('busy');
+  });
+});
+
+// === v2.1.1: pipeline running fallback for pty agents ===
+
+describe('extractBusyAgentsFromPipelines (v2.1.1)', () => {
+  it('returns empty set for null input', () => {
+    expect(extractBusyAgentsFromPipelines(null).size).toBe(0);
+  });
+
+  it('returns empty set for empty pipelines list', () => {
+    expect(extractBusyAgentsFromPipelines({ pipelines: [] }).size).toBe(0);
+  });
+
+  it('returns empty set for missing pipelines key', () => {
+    expect(extractBusyAgentsFromPipelines({}).size).toBe(0);
+  });
+
+  it('extracts agent from single running pipeline with running step', () => {
+    const r = extractBusyAgentsFromPipelines({
+      pipelines: [
+        { status: 'running', steps: [{ agent: 'codex', status: 'running' }] },
+      ],
+    });
+    expect([...r]).toEqual(['codex']);
+  });
+
+  it('ignores pipeline with status=running but step pending', () => {
+    const r = extractBusyAgentsFromPipelines({
+      pipelines: [
+        { status: 'running', steps: [{ agent: 'kiro', status: 'pending' }] },
+      ],
+    });
+    expect(r.size).toBe(0);
+  });
+
+  it('ignores completed pipelines entirely', () => {
+    const r = extractBusyAgentsFromPipelines({
+      pipelines: [
+        { status: 'completed', steps: [{ agent: 'codex', status: 'completed' }] },
+      ],
+    });
+    expect(r.size).toBe(0);
+  });
+
+  it('extracts multiple agents from parallel pipeline', () => {
+    const r = extractBusyAgentsFromPipelines({
+      pipelines: [
+        {
+          status: 'running',
+          steps: [
+            { agent: 'kiro', status: 'running' },
+            { agent: 'codex', status: 'running' },
+            { agent: 'claude', status: 'completed' },
+          ],
+        },
+      ],
+    });
+    expect([...r].sort()).toEqual(['codex', 'kiro']);
+  });
+
+  it('dedupes when multiple pipelines reference same agent', () => {
+    const r = extractBusyAgentsFromPipelines({
+      pipelines: [
+        { status: 'running', steps: [{ agent: 'codex', status: 'running' }] },
+        { status: 'running', steps: [{ agent: 'codex', status: 'running' }] },
+      ],
+    });
+    expect(r.size).toBe(1);
+    expect(r.has('codex')).toBe(true);
+  });
+});
+
+describe('deriveStatus with pipelineRunningSet (v2.1.1)', () => {
+  // pty mode 经典场景: 任务通过 pipeline 跑, /health/agents 看不到 session
+  const ptyHealth = {
+    agents: [{ name: 'codex', mode: 'pty', enabled: true, alive: 0, healthy: true }],
+  };
+  const ptyHealthAgents = {
+    agents: [{ name: 'codex', mode: 'pty', alive_sessions: 0, sessions: [] }],
+  };
+
+  it('pty agent in running pipeline → busy (the bug v2.1.1 fixes)', () => {
+    const set = new Set(['codex']);
+    expect(deriveStatus('codex', ptyHealth, ptyHealthAgents, set)).toBe('busy');
+  });
+
+  it('pty agent NOT in pipeline → offline (unchanged behavior)', () => {
+    expect(deriveStatus('codex', ptyHealth, ptyHealthAgents, new Set())).toBe('offline');
+  });
+
+  it('pty agent without pipeline data → offline (backward compat, default null)', () => {
+    expect(deriveStatus('codex', ptyHealth, ptyHealthAgents)).toBe('offline');
+    expect(deriveStatus('codex', ptyHealth, ptyHealthAgents, null)).toBe('offline');
+  });
+
+  it('acp idle session + agent in pipeline → busy (union semantics)', () => {
+    const acpHealth = {
+      agents: [{ name: 'kiro', mode: 'acp', enabled: true, alive: 1, healthy: true }],
+    };
+    const acpHealthAgents = {
+      agents: [{ name: 'kiro', mode: 'acp', alive_sessions: 1, sessions: [{ state: 'idle' }] }],
+    };
+    const set = new Set(['kiro']);
+    expect(deriveStatus('kiro', acpHealth, acpHealthAgents, set)).toBe('busy');
+  });
+
+  it('session.state=busy takes priority over pipeline (priority 2 > 3)', () => {
+    const h = { agents: [{ name: 'kiro', mode: 'acp', enabled: true, alive: 1, healthy: true }] };
+    const ha = {
+      agents: [{ name: 'kiro', mode: 'acp', alive_sessions: 1, sessions: [{ state: 'busy' }] }],
+    };
+    // 即使 pipelineSet 不含 kiro, session busy 也应判 busy
+    expect(deriveStatus('kiro', h, ha, new Set())).toBe('busy');
+    // 都有也是 busy
+    expect(deriveStatus('kiro', h, ha, new Set(['kiro']))).toBe('busy');
+  });
+
+  it('!enabled overrides pipeline running (priority 1 > 3)', () => {
+    const h = { agents: [{ name: 'codex', mode: 'pty', enabled: false, alive: 0, healthy: true }] };
+    const set = new Set(['codex']);
+    expect(deriveStatus('codex', h, ptyHealthAgents, set)).toBe('offline');
+  });
+});
+
+describe('adaptToPixelConfig with pipelines (v2.1.1)', () => {
+  const health = {
+    agents: [
+      { name: 'codex', mode: 'pty', enabled: true, alive: 0, healthy: true },
+      { name: 'kiro', mode: 'acp', enabled: true, alive: 0, healthy: false },
+    ],
+  };
+  const healthAgents = {
+    agents: [
+      { name: 'codex', mode: 'pty', alive_sessions: 0, sessions: [] },
+      { name: 'kiro', mode: 'acp', alive_sessions: 0, sessions: [] },
+    ],
+  };
+
+  it('pty agent in pipeline → busy in output config', () => {
+    const pipelines = {
+      pipelines: [
+        { status: 'running', steps: [{ agent: 'codex', status: 'running' }] },
+      ],
+    };
+    const cfg = adaptToPixelConfig(health, null, healthAgents, pipelines);
+    expect(cfg.agents.find(a => a.name === 'codex').state).toBe('busy');
+    expect(cfg.agents.find(a => a.name === 'kiro').state).toBe('offline');
+  });
+
+  it('null pipelines arg → all pty agents offline (no fallback)', () => {
+    const cfg = adaptToPixelConfig(health, null, healthAgents, null);
+    expect(cfg.agents.find(a => a.name === 'codex').state).toBe('offline');
+  });
+
+  it('pty agent moves to office slot when busy via pipeline', () => {
+    const pipelines = {
+      pipelines: [
+        { status: 'running', steps: [{ agent: 'codex', status: 'running' }] },
+      ],
+    };
+    const cfg = adaptToPixelConfig(health, null, healthAgents, pipelines);
+    const codex = cfg.agents.find(a => a.name === 'codex');
+    // office baseY = 400, reception baseY = 700
+    expect(codex.y).toBe(400);
   });
 });
