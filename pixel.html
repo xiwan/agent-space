@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Pixel Office — ACP Bridge Agents</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -19,6 +19,7 @@
       display: flex;
       flex-direction: column;
       height: 100vh;
+      height: 100dvh; /* iOS Safari: 排除浏览器工具栏的动态视口 */
     }
 
     #pixelHeader {
@@ -213,6 +214,7 @@
       max-height: 100%;
       width: 960px;
       height: 800px;
+      aspect-ratio: 6 / 5;  /* v2.8.0: 窄屏缩放时维持原比例 */
       image-rendering: pixelated;
       image-rendering: crisp-edges;
       cursor: pointer;
@@ -301,14 +303,88 @@
     .pixel-state-offline { background: #1e293b; color: #64748b; }
     .pixel-state-error   { background: #7f1d1d; color: #fca5a5; }
 
-    /* === 移动端简化: sidebar 堆到底部, 高度自适应 === */
+    /* === v2.8.0: 移动端完整适配 (≤768px) ===
+       - header 紧凑化 (隐藏外链, 标题缩小)
+       - canvas 占满宽度, 维持 6:5 比例
+       - sidebar 堆到底部, 卡片紧凑模式
+       - edit toolbar 改底部抽屉
+    */
     @media (max-width: 768px) {
+      /* main 改纵向堆叠 */
       #pixelMain { flex-direction: column; }
+
+      /* header 紧凑 */
+      #pixelHeader {
+        gap: 8px;
+        padding: 6px 10px;
+      }
+      #pixelHeader h1 {
+        font-size: 12px;
+        letter-spacing: 0.03em;
+      }
+      #pixelHeader a {
+        display: none; /* 隐藏 ← Agent Space, 节省横向空间 */
+      }
+      #pixelStatus {
+        font-size: 10px;
+      }
+      #pixelBgSelect {
+        font-size: 11px;
+        padding: 3px 6px;
+      }
+
+      /* canvas: 占满 stage 宽度, 保持像素比例 */
+      #pixelStage {
+        padding: 4px;
+      }
+      #pixelCanvas {
+        width: 100%;
+        height: auto;
+        max-height: 60vh;
+      }
+
+      /* sidebar 紧凑卡片 */
       #pixelSidebar {
         width: 100%;
         border-left: 0;
         border-top: 1px solid #334155;
         max-height: 40vh;
+        padding: 8px;
+        padding-bottom: calc(8px + env(safe-area-inset-bottom));
+      }
+      .pixel-card {
+        padding: 8px 10px;
+        margin-bottom: 6px;
+      }
+      .pixel-card-desc {
+        -webkit-line-clamp: 1;
+        line-clamp: 1;
+      }
+      .pixel-card-domains {
+        display: none; /* 移动端信息密度优先 */
+      }
+
+      /* edit toolbar 改底部抽屉 */
+      #pixelEditToolbar {
+        right: 0;
+        left: 0;
+        top: auto;
+        bottom: 0;
+        width: 100%;
+        max-height: 60vh;
+        overflow-y: auto;
+        border-radius: 8px 8px 0 0;
+        padding-bottom: calc(12px + env(safe-area-inset-bottom));
+      }
+      #pixelEditToolbar .me-tool-btn {
+        min-height: 32px;
+        padding: 6px 10px;
+        font-size: 12px;
+      }
+      #pixelEditToolbar .me-btn {
+        min-height: 36px;
+        padding: 8px 4px;
+        font-size: 12px;
       }
     }
   </style>

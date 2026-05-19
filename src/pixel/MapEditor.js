@@ -40,10 +40,13 @@ export class MapEditor {
     this._tool = 'blocked';
     this._mouseDown = false;
     this._mouseButton = 0;
+    this._activePointerId = null;
+    this._prevTouchAction = null; // v2.8.0: 编辑模式临时锁定 canvas 触摸手势
 
-    this._onMouseDown = (e) => this._handleMouseDown(e);
-    this._onMouseUp = () => { this._mouseDown = false; };
-    this._onMouseMove = (e) => this._handleMouseMove(e);
+    this._onPointerDown = (e) => this._handlePointerDown(e);
+    this._onPointerUp = (e) => this._handlePointerUp(e);
+    this._onPointerMove = (e) => this._handlePointerMove(e);
+    this._onPointerCancel = (e) => this._handlePointerUp(e);
     this._onContextMenu = (e) => { if (this._open) e.preventDefault(); };
   }
 
@@ -58,9 +61,16 @@ export class MapEditor {
     this._renderToolbar();
     this.toolbar.style.display = 'block';
 
-    this.canvas.addEventListener('mousedown', this._onMouseDown);
-    window.addEventListener('mouseup', this._onMouseUp);
-    this.canvas.addEventListener('mousemove', this._onMouseMove);
+    // v2.8.0: 锁定 canvas 触摸手势, 防止双指缩放/滚动干扰编辑
+    if (this.canvas.style) {
+      this._prevTouchAction = this.canvas.style.touchAction || '';
+      this.canvas.style.touchAction = 'none';
+    }
+
+    this.canvas.addEventListener('pointerdown', this._onPointerDown);
+    this.canvas.addEventListener('pointermove', this._onPointerMove);
+    this.canvas.addEventListener('pointerup', this._onPointerUp);
+    this.canvas.addEventListener('pointercancel', this._onPointerCancel);
     this.canvas.addEventListener('contextmenu', this._onContextMenu);
   }
 
@@ -69,10 +79,24 @@ export class MapEditor {
     this._open = false;
     this.toolbar.style.display = 'none';
 
-    this.canvas.removeEventListener('mousedown', this._onMouseDown);
-    window.removeEventListener('mouseup', this._onMouseUp);
-    this.canvas.removeEventListener('mousemove', this._onMouseMove);
+    this.canvas.removeEventListener('pointerdown', this._onPointerDown);
+    this.canvas.removeEventListener('pointermove', this._onPointerMove);
+    this.canvas.removeEventListener('pointerup', this._onPointerUp);
+    this.canvas.removeEventListener('pointercancel', this._onPointerCancel);
     this.canvas.removeEventListener('contextmenu', this._onContextMenu);
+
+    // v2.8.0: 恢复 canvas 触摸手势
+    if (this.canvas.style && this._prevTouchAction !== null) {
+      this.canvas.style.touchAction = this._prevTouchAction;
+      this._prevTouchAction = null;
+    }
+
+    // 释放可能仍持有的 pointer capture
+    if (this._activePointerId !== null && typeof this.canvas.releasePointerCapture === 'function') {
+      try { this.canvas.releasePointerCapture(this._activePointerId); } catch {}
+    }
+    this._activePointerId = null;
+    this._mouseDown = false;
 
     this.onExit();
   }
@@ -117,15 +141,31 @@ export class MapEditor {
     this.onChange();
   }
 
-  _handleMouseDown(e) {
+  _handlePointerDown(e) {
+    // 触摸: 永远 paint (button=0). 鼠标: 右键(button=2) → 擦除.
     this._mouseDown = true;
-    this._mouseButton = e.button;
+    this._mouseButton = e.button | 0;
+    this._activePointerId = e.pointerId;
+    // 拖动时即便手指 / 鼠标移出 canvas 也继续接收事件
+    if (typeof this.canvas.setPointerCapture === 'function') {
+      try { this.canvas.setPointerCapture(e.pointerId); } catch {}
+    }
     this._paintAt(e);
   }
 
-  _handleMouseMove(e) {
+  _handlePointerMove(e) {
     if (!this._mouseDown) return;
+    if (this._activePointerId !== null && e.pointerId !== this._activePointerId) return;
     this._paintAt(e);
+  }
+
+  _handlePointerUp(e) {
+    if (this._activePointerId !== null && e && e.pointerId !== undefined && e.pointerId !== this._activePointerId) return;
+    this._mouseDown = false;
+    if (this._activePointerId !== null && typeof this.canvas.releasePointerCapture === 'function') {
+      try { this.canvas.releasePointerCapture(this._activePointerId); } catch {}
+    }
+    this._activePointerId = null;
   }
 
   _paintAt(e) {
