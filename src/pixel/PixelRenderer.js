@@ -33,6 +33,29 @@ const STATE_COLORS = {
   error:   '#ef4444',  // red
 };
 
+// v2.7.0: idle agent chitchat pool (随机选一句)
+const IDLE_CHITCHAT = [
+  '☕ coffee?',
+  'afk brb',
+  'lunch?',
+  '🌮 anyone?',
+  'zzz...',
+  '5 min break',
+  'stretch time',
+  '🌞 nice day',
+  '...',
+  'free?',
+  'snack run?',
+  '🎮 later?',
+  '🍵',
+  '👀',
+  'hi 👋',
+];
+
+function pickIdleChat() {
+  return IDLE_CHITCHAT[Math.floor(Math.random() * IDLE_CHITCHAT.length)];
+}
+
 class SpriteSheet {
   constructor(basePath) {
     this.basePath = basePath.replace(/\/$/, '');
@@ -251,6 +274,10 @@ function makeAgent(spec) {
     walking: false,
     sitting: false,
     wanderUntil: 0,
+    // v2.7.0: intermittent chat bubble
+    bubbleText: null,
+    bubbleUntil: 0,
+    bubbleNextAt: 0,
   };
 }
 
@@ -382,6 +409,10 @@ export class PixelRenderer {
         pathIdx: 0,
         pathGridSize: spec.pathGridSize || 16,
         wanderUntil: stateChanged ? 0 : (prev.wanderUntil || 0),
+        // v2.7.0: state 切换时清空气泡 (新 state 立即可冒新词)
+        bubbleText: stateChanged ? null : (prev.bubbleText || null),
+        bubbleUntil: stateChanged ? 0 : (prev.bubbleUntil || 0),
+        bubbleNextAt: stateChanged ? 0 : (prev.bubbleNextAt || 0),
       };
     });
 
@@ -521,6 +552,27 @@ export class PixelRenderer {
         a.cx += (dx / dist) * SPEED;
         a.cy += (dy / dist) * SPEED;
       }
+
+      // v2.7.0: intermittent chat bubble lifecycle
+      // - bubble expires → hide + schedule next (4-10s cooldown)
+      // - cooldown done & state in {idle,busy} → pick text (busy: description, idle: random chitchat)
+      //                                            set bubbleUntil = now + 3-5s
+      if (a.bubbleText && now >= a.bubbleUntil) {
+        a.bubbleText = null;
+        a.bubbleNextAt = now + 4000 + Math.random() * 6000;
+      }
+      if (!a.bubbleText && now >= (a.bubbleNextAt || 0) && (a.state === 'idle' || a.state === 'busy')) {
+        const text = a.state === 'busy'
+          ? (a.description || '').trim()
+          : pickIdleChat();
+        if (text) {
+          a.bubbleText = text;
+          a.bubbleUntil = now + 3000 + Math.random() * 2000;
+        } else {
+          // busy but no description yet — short retry
+          a.bubbleNextAt = now + 1000;
+        }
+      }
     }
   }
 
@@ -644,8 +696,8 @@ export class PixelRenderer {
       // name label
       this._drawLabel(a);
 
-      // v2.6.0: pixel chat bubble for idle/busy with description
-      if ((a.state === 'idle' || a.state === 'busy') && a.description) {
+      // v2.7.0: pixel chat bubble — only draw when bubbleText set by _tick lifecycle
+      if (a.bubbleText) {
         this._drawBubble(a);
       }
     }
@@ -741,17 +793,17 @@ export class PixelRenderer {
   }
 
   /**
-   * v2.6.0: 像素风聊天气泡 (idle/busy 时显示 description).
+   * v2.7.0: 像素风聊天气泡. 只画 a.bubbleText (由 _tick 的状态机维护).
    * 风格: 纯色填充 + 1px 黑边 (像素风, 无圆角无阴影), 像素字体, 方块尾巴.
    */
   _drawBubble(a) {
     const { ctx } = this;
-    const desc = (a.description || '').trim();
-    if (!desc) return;
+    const raw = (a.bubbleText || '').trim();
+    if (!raw) return;
 
     // 截断长文本 — 单行最大宽度
     const MAX_CHARS = 24;
-    const text = desc.length > MAX_CHARS ? desc.slice(0, MAX_CHARS - 1) + '…' : desc;
+    const text = raw.length > MAX_CHARS ? raw.slice(0, MAX_CHARS - 1) + '…' : raw;
 
     ctx.save();
     ctx.font = '10px "Courier New", monospace';

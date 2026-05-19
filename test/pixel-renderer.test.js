@@ -283,7 +283,7 @@ describe('PixelRenderer v2.6.0', () => {
     });
   });
 
-  describe('chat bubble (v2.6.0)', () => {
+  describe('chat bubble drawing (v2.7.0 reads bubbleText)', () => {
     let renderer, ctx;
     beforeEach(() => {
       const canvas = makeCanvas();
@@ -291,33 +291,33 @@ describe('PixelRenderer v2.6.0', () => {
       renderer = new PixelRenderer(canvas);
     });
 
-    it('idle agent with description draws bubble', () => {
-      const a = { name: 'k', cx: 100, cy: 100, state: 'idle', description: 'hello world', color: 0 };
+    it('agent with bubbleText draws that text', () => {
+      const a = { name: 'k', cx: 100, cy: 100, state: 'idle', bubbleText: 'hello world', color: 0 };
       const texts = [];
       ctx.fillText = vi.fn((...args) => { texts.push(args[0]); });
       renderer._drawBubble(a);
       expect(texts).toContain('hello world');
     });
 
-    it('busy agent with description draws bubble', () => {
-      const a = { name: 'k', cx: 100, cy: 100, state: 'busy', description: 'working hard', color: 0 };
+    it('busy agent with bubbleText draws that text', () => {
+      const a = { name: 'k', cx: 100, cy: 100, state: 'busy', bubbleText: 'working hard', color: 0 };
       const texts = [];
       ctx.fillText = vi.fn((...args) => { texts.push(args[0]); });
       renderer._drawBubble(a);
       expect(texts).toContain('working hard');
     });
 
-    it('empty description draws nothing', () => {
-      const a = { name: 'k', cx: 100, cy: 100, state: 'idle', description: '', color: 0 };
+    it('null/empty bubbleText draws nothing', () => {
       const texts = [];
       ctx.fillText = vi.fn((...args) => { texts.push(args[0]); });
-      renderer._drawBubble(a);
+      renderer._drawBubble({ name: 'k', cx: 100, cy: 100, state: 'idle', bubbleText: null, color: 0 });
+      renderer._drawBubble({ name: 'k', cx: 100, cy: 100, state: 'idle', bubbleText: '', color: 0 });
       expect(texts).toEqual([]);
     });
 
-    it('long description is truncated with ellipsis', () => {
+    it('long bubbleText is truncated with ellipsis', () => {
       const a = { name: 'k', cx: 100, cy: 100, state: 'idle',
-        description: 'This is a very long description that exceeds the maximum bubble width', color: 0 };
+        bubbleText: 'This is a very long bubble that exceeds the maximum width', color: 0 };
       const texts = [];
       ctx.fillText = vi.fn((...args) => { texts.push(args[0]); });
       renderer._drawBubble(a);
@@ -326,19 +326,135 @@ describe('PixelRenderer v2.6.0', () => {
       expect(drawn.endsWith('…')).toBe(true);
     });
 
-    it('_draw skips bubble for offline state', () => {
+    it('_draw skips bubble when bubbleText is null (even if description set)', () => {
       renderer._spritesVisible = true;
       renderer._paused = false;
       renderer.sheet.loaded = true;
       renderer.sheet.background = { complete: true, naturalWidth: 960, naturalHeight: 800 };
       renderer.sheet.chars = [{ complete: true, naturalWidth: 112, naturalHeight: 96 }];
-      renderer.agents = [{ name: 'k', cx: 50, cy: 50, tx: 50, ty: 50, state: 'offline',
-        description: 'should not show', color: 0, facing: 'down', walking: false, sitting: false }];
+      // description set but bubbleText is null → bubble NOT drawn (v2.7.0: _tick controls visibility)
+      renderer.agents = [{ name: 'k', cx: 50, cy: 50, tx: 50, ty: 50, state: 'idle',
+        description: 'should not show', bubbleText: null,
+        color: 0, facing: 'down', walking: false, sitting: false }];
 
       const texts = [];
       ctx.fillText = vi.fn((...args) => { texts.push(args[0]); });
       renderer._draw();
       expect(texts).not.toContain('should not show');
+    });
+  });
+
+  describe('chat bubble lifecycle state machine (v2.7.0)', () => {
+    let renderer;
+    beforeEach(() => {
+      renderer = new PixelRenderer(makeCanvas());
+      renderer._paused = false;
+      renderer._spritesVisible = true;
+    });
+
+    it('idle agent starts a bubble from IDLE_CHITCHAT pool when cooldown done', () => {
+      // No mapConfig/pathfinder → wander is skipped. Focus only on bubble logic.
+      renderer.agents = [{
+        name: 'bot', cx: 100, cy: 100, tx: 100, ty: 100,
+        state: 'idle', facing: 'down', walking: false, sitting: false,
+        path: null, pathIdx: 0, pathGridSize: 16, wanderUntil: Number.MAX_SAFE_INTEGER,
+        bubbleText: null, bubbleUntil: 0, bubbleNextAt: 0,
+        description: 'real-work-desc', color: 0,
+      }];
+      renderer._tick();
+      const a = renderer.agents[0];
+      expect(a.bubbleText).not.toBeNull();
+      // idle MUST come from chitchat pool, NOT description
+      expect(a.bubbleText).not.toBe('real-work-desc');
+      expect(a.bubbleUntil).toBeGreaterThan(performance.now());
+    });
+
+    it('busy agent uses description as bubble text', () => {
+      renderer.agents = [{
+        name: 'bot', cx: 100, cy: 100, tx: 100, ty: 100,
+        state: 'busy', facing: 'down', walking: false, sitting: false,
+        path: null, pathIdx: 0, pathGridSize: 16, wanderUntil: Number.MAX_SAFE_INTEGER,
+        bubbleText: null, bubbleUntil: 0, bubbleNextAt: 0,
+        description: 'compiling rust', color: 0,
+      }];
+      renderer._tick();
+      expect(renderer.agents[0].bubbleText).toBe('compiling rust');
+    });
+
+    it('expired bubble is hidden and cooldown is set in the future', () => {
+      const past = performance.now() - 1000;
+      renderer.agents = [{
+        name: 'bot', cx: 100, cy: 100, tx: 100, ty: 100,
+        state: 'idle', facing: 'down', walking: false, sitting: false,
+        path: null, pathIdx: 0, pathGridSize: 16, wanderUntil: Number.MAX_SAFE_INTEGER,
+        bubbleText: '☕ coffee?', bubbleUntil: past, bubbleNextAt: 0,
+        description: '', color: 0,
+      }];
+      renderer._tick();
+      const a = renderer.agents[0];
+      expect(a.bubbleText).toBeNull();
+      // cooldown must be 4-10s in the future
+      const now = performance.now();
+      expect(a.bubbleNextAt).toBeGreaterThanOrEqual(now + 3990);
+      expect(a.bubbleNextAt).toBeLessThanOrEqual(now + 10010);
+    });
+
+    it('agent in cooldown does not get a new bubble yet', () => {
+      const future = performance.now() + 99999;
+      renderer.agents = [{
+        name: 'bot', cx: 100, cy: 100, tx: 100, ty: 100,
+        state: 'idle', facing: 'down', walking: false, sitting: false,
+        path: null, pathIdx: 0, pathGridSize: 16, wanderUntil: Number.MAX_SAFE_INTEGER,
+        bubbleText: null, bubbleUntil: 0, bubbleNextAt: future,
+        description: '', color: 0,
+      }];
+      renderer._tick();
+      expect(renderer.agents[0].bubbleText).toBeNull();
+    });
+
+    it('offline agent never gets a bubble', () => {
+      renderer.agents = [{
+        name: 'bot', cx: 100, cy: 100, tx: 100, ty: 100,
+        state: 'offline', facing: 'down', walking: false, sitting: false,
+        path: null, pathIdx: 0, pathGridSize: 16, wanderUntil: Number.MAX_SAFE_INTEGER,
+        bubbleText: null, bubbleUntil: 0, bubbleNextAt: 0,
+        description: 'should-not-show', color: 0,
+      }];
+      renderer._tick();
+      expect(renderer.agents[0].bubbleText).toBeNull();
+    });
+
+    it('busy agent without description schedules a short retry instead of empty bubble', () => {
+      const before = performance.now();
+      renderer.agents = [{
+        name: 'bot', cx: 100, cy: 100, tx: 100, ty: 100,
+        state: 'busy', facing: 'down', walking: false, sitting: false,
+        path: null, pathIdx: 0, pathGridSize: 16, wanderUntil: Number.MAX_SAFE_INTEGER,
+        bubbleText: null, bubbleUntil: 0, bubbleNextAt: 0,
+        description: '', color: 0,
+      }];
+      renderer._tick();
+      const a = renderer.agents[0];
+      expect(a.bubbleText).toBeNull();
+      // retry within ~1s
+      expect(a.bubbleNextAt).toBeGreaterThanOrEqual(before + 990);
+      expect(a.bubbleNextAt).toBeLessThanOrEqual(before + 1100);
+    });
+
+    it('state change in setConfig clears bubbleText/Until/NextAt (immediate re-bubble allowed)', () => {
+      renderer.setConfig({ agents: [{ name: 'bot', x: 100, y: 100, state: 'busy', color: 0, description: 'old' }] });
+      // simulate active bubble
+      const a = renderer.agents[0];
+      a.bubbleText = 'old';
+      a.bubbleUntil = performance.now() + 99999;
+      a.bubbleNextAt = performance.now() + 99999;
+
+      // state changes
+      renderer.setConfig({ agents: [{ name: 'bot', x: 100, y: 100, state: 'idle', color: 0 }] });
+      const a2 = renderer.agents[0];
+      expect(a2.bubbleText).toBeNull();
+      expect(a2.bubbleUntil).toBe(0);
+      expect(a2.bubbleNextAt).toBe(0);
     });
   });
 });
