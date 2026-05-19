@@ -19,6 +19,7 @@ import { Sidebar } from './Sidebar.js';
 import { MapEditor } from './MapEditor.js';
 import {
   loadMapConfig, saveMapConfig, emptyMapConfig,
+  loadMapConfigAsync, saveMapConfigAsync,
   getTargetCell, cellToPx, pxToCell, getZoneCells,
 } from './MapConfig.js';
 import { findPath } from './PathFinder.js';
@@ -71,8 +72,13 @@ async function main() {
   let currentBg = BG_DEFAULT;
   let mapConfig = null;
 
-  const reloadMapConfig = () => {
-    mapConfig = loadMapConfig(currentBg);
+  // v2.9.0: server-first load. 失败退 localStorage. 状态条显示来源.
+  const reloadMapConfig = async () => {
+    try {
+      mapConfig = await loadMapConfigAsync(currentBg);
+    } catch {
+      mapConfig = loadMapConfig(currentBg);
+    }
     poller.setMapConfig(mapConfig, getTargetCell, cellToPx);
     renderer.setMapConfig(mapConfig);
   };
@@ -92,9 +98,34 @@ async function main() {
   });
 
   const editor = (editBtnEl && editToolbarEl) ? new MapEditor(canvas, editToolbarEl, {
-    onSave: () => {
-      saveMapConfig(currentBg, mapConfig);
-      setStatus(`map saved for ${currentBg}`, 'ok');
+    onSave: async () => {
+      try {
+        await saveMapConfigAsync(currentBg, mapConfig);
+        setStatus(`map saved to server for ${currentBg}`, 'ok');
+      } catch (e) {
+        // 服务端失败 → 退到本地保存, 至少不丢
+        saveMapConfig(currentBg, mapConfig);
+        setStatus(`server save failed (${e.message}) — saved locally only`, 'error');
+      }
+    },
+    onUploadLocal: async () => {
+      // v2.9.0: 把当前浏览器 localStorage 的同 bgId 配置推到 server (一次性迁移)
+      const local = loadMapConfig(currentBg);
+      if (!local) {
+        setStatus(`no local map for ${currentBg}`, 'error');
+        return;
+      }
+      try {
+        await saveMapConfigAsync(currentBg, local);
+        // 推完后让 in-memory 也指向这份, 以免编辑器里 zones 是空的
+        mapConfig = local;
+        poller.setMapConfig(mapConfig, getTargetCell, cellToPx);
+        renderer.setMapConfig(mapConfig);
+        if (editor) editor.setMapConfig(mapConfig);
+        setStatus(`local map uploaded to server (${currentBg})`, 'ok');
+      } catch (e) {
+        setStatus(`upload failed: ${e.message}`, 'error');
+      }
     },
     onChange: () => {},
     onExit: () => {
@@ -130,7 +161,7 @@ async function main() {
       try { localStorage.setItem(BG_LS_KEY, currentBg); } catch {}
       const opt = BG_OPTIONS[currentBg];
       if (opt) await renderer.setBackground(opt.url);
-      reloadMapConfig();
+      await reloadMapConfig();
     });
   }
 
@@ -254,7 +285,7 @@ async function main() {
     onError: (err) => setStatus(`bridge error: ${err.message}`, 'error'),
   });
 
-  reloadMapConfig();
+  await reloadMapConfig();
   renderer.start();
   setStatus('connecting to bridge...');
   poller.start();

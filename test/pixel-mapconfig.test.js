@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   emptyMapConfig, loadMapConfig, saveMapConfig, clearMapConfig, migrateV1toV2,
   setObstacle, setZoneCell, findZoneAt,
   stateToZone, hashString, getTargetCell,
   cellToPx, pxToCell, getZoneCells,
+  loadMapConfigAsync, saveMapConfigAsync,
   GRID_SIZE, COLS, ROWS, ZONE_KEYS,
 } from '../src/pixel/MapConfig.js';
 
@@ -330,6 +331,162 @@ describe('MapConfig (v2.5.0 global zones)', () => {
 
     it('returns empty array for null mapConfig', () => {
       expect(getZoneCells('home', null)).toEqual([]);
+    });
+  });
+
+  // === v2.9.0: 服务端 async API ===
+
+  describe('loadMapConfigAsync (v2.9.0)', () => {
+    function mockFetchOk(body) {
+      return vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => body,
+      });
+    }
+    function mockFetch404() {
+      return vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        json: async () => ({ error: 'not found' }),
+      });
+    }
+    function mockFetchReject(msg = 'network error') {
+      return vi.fn().mockRejectedValue(new Error(msg));
+    }
+
+    beforeEach(() => {
+      try { localStorage.clear(); } catch {}
+    });
+
+    it('server 200 + valid → returns server config and writes localStorage cache', async () => {
+      const serverCfg = emptyMapConfig();
+      setObstacle(serverCfg, 5, 5, true);
+      const fetchMock = mockFetchOk(serverCfg);
+      const got = await loadMapConfigAsync('level3', fetchMock);
+      expect(got).toEqual(serverCfg);
+      expect(fetchMock).toHaveBeenCalledWith('/api/pixel-maps/level3');
+      // cache 写入了
+      const cached = loadMapConfig('level3');
+      expect(cached.obstacles[5][5]).toBe(1);
+    });
+
+    it('server 200 + invalid body → falls back to localStorage', async () => {
+      const local = emptyMapConfig();
+      setZoneCell(local, 'work', 7, 7, true);
+      saveMapConfig('level3', local);
+      const fetchMock = mockFetchOk({ garbage: true }); // 形态不合法
+      const got = await loadMapConfigAsync('level3', fetchMock);
+      expect(got.zones.work).toEqual([[7, 7]]);
+    });
+
+    it('server 404 → falls back to localStorage', async () => {
+      const local = emptyMapConfig();
+      setObstacle(local, 1, 1, true);
+      saveMapConfig('level3', local);
+      const fetchMock = mockFetch404();
+      const got = await loadMapConfigAsync('level3', fetchMock);
+      expect(got.obstacles[1][1]).toBe(1);
+    });
+
+    it('fetch reject (network down) → falls back to localStorage', async () => {
+      const local = emptyMapConfig();
+      saveMapConfig('level3', local);
+      const fetchMock = mockFetchReject();
+      const got = await loadMapConfigAsync('level3', fetchMock);
+      expect(got).toBeTruthy();
+      expect(got.zones).toEqual({ home: [], work: [], idle: [] });
+    });
+
+    it('server 404 + no localStorage → returns null', async () => {
+      const fetchMock = mockFetch404();
+      const got = await loadMapConfigAsync('level3', fetchMock);
+      expect(got).toBeNull();
+    });
+
+    it('returns null when bgId is empty', async () => {
+      const fetchMock = vi.fn();
+      const got = await loadMapConfigAsync('', fetchMock);
+      expect(got).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('encodes bgId in URL (e.g. level3.5)', async () => {
+      const serverCfg = emptyMapConfig();
+      const fetchMock = mockFetchOk(serverCfg);
+      await loadMapConfigAsync('level3.5', fetchMock);
+      // encodeURIComponent('level3.5') === 'level3.5' (dot is unreserved), 但调用形式必须用 encoded
+      expect(fetchMock).toHaveBeenCalledWith('/api/pixel-maps/level3.5');
+    });
+
+    it('migrates v1 server response to v2 transparently', async () => {
+      const v1 = {
+        version: 1,
+        gridSize: 16,
+        cols: 60,
+        rows: 50,
+        obstacles: Array.from({ length: 50 }, () => Array(60).fill(0)),
+        zones: { home: { agentA: [[1, 1]] }, work: {}, idle: {} },
+      };
+      const fetchMock = mockFetchOk(v1);
+      const got = await loadMapConfigAsync('level3', fetchMock);
+      expect(got).not.toBeNull();
+      expect(got.version).toBe(2);
+      expect(got.zones.home).toEqual([[1, 1]]);
+    });
+  });
+
+  describe('saveMapConfigAsync (v2.9.0)', () => {
+    function mockFetchOk() {
+      return vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) });
+    }
+    function mockFetch5xx() {
+      return vi.fn().mockResolvedValue({ ok: false, status: 500, json: async () => ({ error: 'oops' }) });
+    }
+    function mockFetchReject() {
+      return vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    }
+
+    beforeEach(() => {
+      try { localStorage.clear(); } catch {}
+    });
+
+    it('PUTs cfg to server and writes localStorage cache on success', async () => {
+      const fetchMock = mockFetchOk();
+      const cfg = emptyMapConfig();
+      setObstacle(cfg, 3, 3, true);
+      const ok = await saveMapConfigAsync('level3', cfg, fetchMock);
+      expect(ok).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('/api/pixel-maps/level3');
+      expect(init.method).toBe('PUT');
+      expect(init.headers['content-type']).toBe('application/json');
+      expect(JSON.parse(init.body).obstacles[3][3]).toBe(1);
+      // cache 写入
+      expect(loadMapConfig('level3').obstacles[3][3]).toBe(1);
+    });
+
+    it('rejects on 5xx and does NOT write localStorage', async () => {
+      const fetchMock = mockFetch5xx();
+      const cfg = emptyMapConfig();
+      await expect(saveMapConfigAsync('level3', cfg, fetchMock)).rejects.toThrow(/500/);
+      // localStorage 没写
+      expect(loadMapConfig('level3')).toBeNull();
+    });
+
+    it('rejects on network error', async () => {
+      const fetchMock = mockFetchReject();
+      const cfg = emptyMapConfig();
+      await expect(saveMapConfigAsync('level3', cfg, fetchMock)).rejects.toThrow(/network error/);
+    });
+
+    it('throws synchronously (returns rejected promise) when bgId missing', async () => {
+      await expect(saveMapConfigAsync('', emptyMapConfig(), vi.fn())).rejects.toThrow(/bgId required/);
+    });
+
+    it('throws when cfg missing', async () => {
+      await expect(saveMapConfigAsync('level3', null, vi.fn())).rejects.toThrow(/cfg required/);
     });
   });
 });

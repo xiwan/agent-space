@@ -245,4 +245,33 @@ describe('MapEditor (v2.5.0 global zones)', () => {
     expect(cfg.obstacles[1][1]).toBe(1);
     expect(cfg.obstacles[3][3]).toBe(0);
   });
+
+  // === v2.9.0: Upload local 按钮 + setMapConfig ===
+
+  it('v2.9.0: upload button NOT rendered when onUploadLocal is missing', () => {
+    editor.open(cfg);
+    expect(toolbar.querySelector('.me-upload')).toBeNull();
+  });
+
+  it('v2.9.0: upload button rendered + click triggers onUploadLocal', () => {
+    const onUploadLocal = vi.fn();
+    const e2 = new MapEditor(canvas, toolbar, { onChange, onUploadLocal });
+    e2.open(cfg);
+    const btn = toolbar.querySelector('.me-upload');
+    expect(btn).not.toBeNull();
+    btn.click();
+    expect(onUploadLocal).toHaveBeenCalledTimes(1);
+  });
+
+  it('v2.9.0: setMapConfig swaps current cfg in-place', () => {
+    editor.open(cfg);
+    const newCfg = emptyMapConfig();
+    setZoneCell(newCfg, 'work', 9, 9, true);
+    editor.setMapConfig(newCfg);
+    // 后续 paint 操作应作用在 newCfg 上, 而不是旧 cfg
+    toolbar.querySelector('[data-tool="home"]').click();
+    canvas.dispatchEvent(pointerEvent('pointerdown', 0, 24, 24, { pointerType: 'touch' }));
+    expect(newCfg.zones.home).toEqual([[1, 1]]);
+    expect(cfg.zones.home).toEqual([]); // 旧 cfg 不动
+  });
 });

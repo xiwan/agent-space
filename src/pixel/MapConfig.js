@@ -125,6 +125,104 @@ export function saveMapConfig(bgId, cfg) {
   }
 }
 
+// === v2.9.0: 服务端共享 mapConfig ===
+
+const SERVER_API = '/api/pixel-maps/';
+
+/**
+ * 校验从 server 收到的 cfg 形态是否合法 (避免坏数据污染). 同 loadMapConfig 内的检查.
+ */
+function isValidMapConfig(cfg) {
+  if (!cfg || typeof cfg !== 'object') return false;
+  if (cfg.version !== SCHEMA_VERSION) return false;
+  if (!Array.isArray(cfg.obstacles) || cfg.obstacles.length !== cfg.rows) return false;
+  if (!cfg.zones || !ZONE_KEYS.every(z => Array.isArray(cfg.zones[z]))) return false;
+  return true;
+}
+
+/**
+ * v2.9.0: 异步加载 — server 优先, 失败/404 退回 localStorage cache.
+ *
+ * 行为:
+ *   1. fetch GET /api/pixel-maps/<bgId>
+ *      - 200 + 合法 → 写回 localStorage 缓存, 返回 cfg
+ *      - 200 + 非法 → 当作没有, 退 localStorage
+ *      - 404 / 其他非 2xx → 退 localStorage
+ *   2. fetch reject (网络错 / server 没启动) → 退 localStorage (与旧行为一致)
+ *
+ * @param {string} bgId
+ * @param {Function} [fetchImpl] 测试可注入 mock fetch
+ * @returns {Promise<object|null>}
+ */
+export async function loadMapConfigAsync(bgId, fetchImpl) {
+  if (!bgId) return null;
+  const _fetch = fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
+  if (_fetch) {
+    try {
+      const r = await _fetch(SERVER_API + encodeURIComponent(bgId));
+      if (r && r.ok) {
+        let cfg = null;
+        try { cfg = await r.json(); } catch { cfg = null; }
+        // 兼容: server 也存 v1 格式时迁移
+        if (cfg && cfg.version === 1) cfg = migrateV1toV2(cfg);
+        if (isValidMapConfig(cfg)) {
+          // 写回 localStorage 当 cache (失败静默 — 隐私模式 / 配额)
+          try {
+            if (typeof localStorage !== 'undefined') {
+              localStorage.setItem(LS_PREFIX + bgId, JSON.stringify(cfg));
+            }
+          } catch {}
+          return cfg;
+        }
+      }
+      // 非 2xx 或非法 → fall through 到 localStorage
+    } catch {
+      // 网络错 → fall through
+    }
+  }
+  return loadMapConfig(bgId);
+}
+
+/**
+ * v2.9.0: 异步保存 — 推到 server, 成功后写 localStorage cache.
+ *
+ * 行为:
+ *   - PUT /api/pixel-maps/<bgId>
+ *   - 2xx → localStorage 同步 + resolve true
+ *   - 非 2xx / 网络错 → reject Error (caller 决定提示)
+ *
+ * 注意: 失败时**不写** localStorage — 避免本地领先 server 形成"假成功". 用户可重试.
+ *
+ * @param {string} bgId
+ * @param {object} cfg
+ * @param {Function} [fetchImpl] 测试可注入
+ * @returns {Promise<true>}
+ */
+export async function saveMapConfigAsync(bgId, cfg, fetchImpl) {
+  if (!bgId) throw new Error('saveMapConfigAsync: bgId required');
+  if (!cfg) throw new Error('saveMapConfigAsync: cfg required');
+  const _fetch = fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
+  if (!_fetch) throw new Error('saveMapConfigAsync: fetch unavailable');
+
+  let r;
+  try {
+    r = await _fetch(SERVER_API + encodeURIComponent(bgId), {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+  } catch (e) {
+    throw new Error(`network error: ${e.message}`);
+  }
+  if (!r || !r.ok) {
+    const status = r ? r.status : '?';
+    throw new Error(`server returned ${status}`);
+  }
+  // 写本地 cache (失败静默)
+  saveMapConfig(bgId, cfg);
+  return true;
+}
+
 /**
  * 删除某背景的配置.
  */

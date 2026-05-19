@@ -34,6 +34,7 @@ export class MapEditor {
     this.onSave = opts.onSave || (() => {});
     this.onChange = opts.onChange || (() => {});
     this.onExit = opts.onExit || (() => {});
+    this.onUploadLocal = opts.onUploadLocal || null; // v2.9.0
 
     this.mapConfig = null;
     this._open = false;
@@ -104,8 +105,18 @@ export class MapEditor {
   isOpen() { return this._open; }
   getTool() { return this._tool; }
 
+  /**
+   * v2.9.0: 在 editor 已打开时切换 mapConfig 引用 (用于 upload local 后让 in-memory 同步).
+   */
+  setMapConfig(mapConfig) {
+    this.mapConfig = mapConfig;
+  }
+
   _renderToolbar() {
     const tb = this.toolbar;
+    const uploadBtn = this.onUploadLocal
+      ? `<button class="me-btn me-upload" title="Push localStorage map for this background to server">📤 Upload local</button>`
+      : '';
     tb.innerHTML = `
       <div class="me-title">EDIT MODE</div>
       <div class="me-row">
@@ -119,6 +130,7 @@ export class MapEditor {
         <button class="me-btn me-reset">🗑 Reset</button>
         <button class="me-btn me-exit">✕ Exit</button>
       </div>
+      ${uploadBtn ? `<div class="me-actions">${uploadBtn}</div>` : ''}
       <div class="me-hint">left = paint, right = erase</div>
     `;
     tb.querySelectorAll('.me-tool-btn').forEach(b =>
@@ -127,6 +139,10 @@ export class MapEditor {
     tb.querySelector('.me-save').addEventListener('click', () => this.onSave());
     tb.querySelector('.me-reset').addEventListener('click', () => this._handleReset());
     tb.querySelector('.me-exit').addEventListener('click', () => this.close());
+    const uploadEl = tb.querySelector('.me-upload');
+    if (uploadEl && this.onUploadLocal) {
+      uploadEl.addEventListener('click', () => this.onUploadLocal());
+    }
   }
 
   _handleReset() {
