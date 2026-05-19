@@ -1,9 +1,17 @@
 /**
- * MapConfig — Per-background map configuration
+ * MapConfig — Per-background map configuration (v2.5.0: global zones)
  *
  * 每张背景一份配置, 存 localStorage:
  *   key: pixel.mapConfig.<bgId>     (bgId: level1/level2/level3/level3.5/level4/default)
  *   value: JSON  { gridSize, cols, rows, obstacles[][], zones }
+ *
+ * v2 schema (2.5.0):
+ *   zones: { home: [[c,r],...], work: [[c,r],...], idle: [[c,r],...] }   ← 全局, 所有 agent 共享
+ *
+ * v1 schema (2.4.x):
+ *   zones: { home: { agentName: [[c,r],...], ... }, work: {...}, idle: {...} }
+ *
+ * v1 → v2 迁移: 合并去重所有 agent 的 cells.
  *
  * 状态 → 区域映射 (in BridgeAdapter):
  *   busy    → work zone
@@ -11,7 +19,7 @@
  *   offline → home zone
  *   error   → home zone (保守 fallback)
  *
- * 区域内多 cell: hashString(agent.name) % cells.length 哈希分配 (稳定无重叠检测)
+ * 区域内多 cell: hashString(agent.name) % cells.length 哈希分配 (稳定, 多 agent 散到不同 cell)
  */
 
 export const GRID_SIZE = 16;
@@ -23,7 +31,7 @@ export const ROWS = Math.floor(CANVAS_H / GRID_SIZE); // 50
 export const ZONE_KEYS = ['home', 'work', 'idle'];
 
 const LS_PREFIX = 'pixel.mapConfig.';
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 /**
  * 创建一个空的 mapConfig (所有 cell walkable, 所有 zone 空).
@@ -35,16 +43,44 @@ export function emptyMapConfig() {
     cols: COLS,
     rows: ROWS,
     obstacles: Array.from({ length: ROWS }, () => Array(COLS).fill(0)),
-    zones: { home: {}, work: {}, idle: {} },
+    zones: { home: [], work: [], idle: [] },
   };
 }
 
 /**
- * 从 localStorage 读取指定背景的 mapConfig.
- * 不存在 / 损坏 / 版本不匹配 → null (caller fallback).
+ * v1 (per-agent zones) → v2 (global zones) 迁移.
+ * 合并所有 agent 的 cells, 同 cell 去重.
  *
- * @param {string} bgId
- * @returns {object | null}
+ * @param {object} cfg v1 schema
+ * @returns {object} v2 schema
+ */
+export function migrateV1toV2(cfg) {
+  if (!cfg || cfg.version !== 1) return cfg;
+  const newZones = { home: [], work: [], idle: [] };
+  for (const zoneKey of ZONE_KEYS) {
+    const seen = new Set();
+    const v1Zone = cfg.zones?.[zoneKey] || {};
+    // v1Zone is { agentName: [[c,r],...] }
+    for (const cells of Object.values(v1Zone)) {
+      if (!Array.isArray(cells)) continue;
+      for (const cell of cells) {
+        if (!Array.isArray(cell) || cell.length !== 2) continue;
+        const [c, r] = cell;
+        const k = c + ',' + r;
+        if (!seen.has(k)) {
+          seen.add(k);
+          newZones[zoneKey].push([c, r]);
+        }
+      }
+    }
+  }
+  return { ...cfg, version: SCHEMA_VERSION, zones: newZones };
+}
+
+/**
+ * 从 localStorage 读取指定背景的 mapConfig.
+ * 不存在 / 损坏 → null.
+ * v1 数据自动迁移并保存为 v2.
  */
 export function loadMapConfig(bgId) {
   if (!bgId) return null;
@@ -56,10 +92,19 @@ export function loadMapConfig(bgId) {
   }
   if (!raw) return null;
   try {
-    const cfg = JSON.parse(raw);
-    if (!cfg || cfg.version !== SCHEMA_VERSION) return null;
+    let cfg = JSON.parse(raw);
+    if (!cfg) return null;
+
+    // v1 → v2 迁移
+    if (cfg.version === 1) {
+      cfg = migrateV1toV2(cfg);
+      // 自动持久化迁移结果
+      try { localStorage.setItem(LS_PREFIX + bgId, JSON.stringify(cfg)); } catch {}
+    }
+
+    if (cfg.version !== SCHEMA_VERSION) return null;
     if (!Array.isArray(cfg.obstacles) || cfg.obstacles.length !== cfg.rows) return null;
-    if (!cfg.zones || !ZONE_KEYS.every(z => cfg.zones[z] && typeof cfg.zones[z] === 'object')) return null;
+    if (!cfg.zones || !ZONE_KEYS.every(z => Array.isArray(cfg.zones[z]))) return null;
     return cfg;
   } catch {
     return null;
@@ -68,9 +113,6 @@ export function loadMapConfig(bgId) {
 
 /**
  * 持久化到 localStorage.
- * @param {string} bgId
- * @param {object} cfg
- * @returns {boolean} 成功 = true
  */
 export function saveMapConfig(bgId, cfg) {
   if (!bgId || !cfg) return false;
@@ -102,43 +144,33 @@ export function setObstacle(cfg, col, row, blocked) {
 }
 
 /**
- * 给指定 agent 在指定 zone 增加/移除一个 cell.
+ * v2.5.0: 加/移 cell 到全局 zone (不再按 agent 区分).
  *
  * @param {object} cfg
  * @param {string} zoneKey 'home' | 'work' | 'idle'
- * @param {string} agentName
  * @param {number} col
  * @param {number} row
- * @param {boolean} on  true=加, false=移除
+ * @param {boolean} on  true=加 (idempotent), false=移除
  */
-export function setZoneCell(cfg, zoneKey, agentName, col, row, on) {
+export function setZoneCell(cfg, zoneKey, col, row, on) {
   if (!ZONE_KEYS.includes(zoneKey)) return;
-  if (!agentName) return;
   if (col < 0 || col >= cfg.cols || row < 0 || row >= cfg.rows) return;
-
-  const zone = cfg.zones[zoneKey];
-  if (!zone[agentName]) zone[agentName] = [];
-  const cells = zone[agentName];
+  const cells = cfg.zones[zoneKey];
   const idx = cells.findIndex(([c, r]) => c === col && r === row);
   if (on && idx === -1) {
     cells.push([col, row]);
   } else if (!on && idx !== -1) {
     cells.splice(idx, 1);
-    if (cells.length === 0) delete zone[agentName];
   }
 }
 
 /**
- * 给定 cell, 返回它属于哪个 zone + 哪个 agent (用于编辑器右键擦除).
- * 不属于任何 zone → null.
+ * 给定 cell, 返回它属于哪个 zone (单 zone, 因为 global). 不属于任何 → null.
  */
 export function findZoneAt(cfg, col, row) {
   for (const zoneKey of ZONE_KEYS) {
-    const zone = cfg.zones[zoneKey];
-    for (const [agentName, cells] of Object.entries(zone)) {
-      if (cells.some(([c, r]) => c === col && r === row)) {
-        return { zoneKey, agentName };
-      }
+    if (cfg.zones[zoneKey].some(([c, r]) => c === col && r === row)) {
+      return { zoneKey };
     }
   }
   return null;
@@ -150,8 +182,7 @@ export function findZoneAt(cfg, col, row) {
 export function stateToZone(state) {
   if (state === 'busy') return 'work';
   if (state === 'idle') return 'idle';
-  // offline / error
-  return 'home';
+  return 'home'; // offline / error / unknown
 }
 
 /**
@@ -166,12 +197,13 @@ export function hashString(s) {
 }
 
 /**
- * 给定 agent + 状态 + mapConfig, 返回目标 cell [col, row], 或 null (没配置 → fallback).
+ * v2.5.0: 给定 agent + 状态 + mapConfig, 返回目标 cell [col, row], 或 null (没配置 → fallback).
+ * 多 agent 同状态时, 由 hashString(name) 散到不同 cell.
  */
 export function getTargetCell(agentName, state, mapConfig) {
   if (!mapConfig) return null;
   const zoneKey = stateToZone(state);
-  const cells = mapConfig.zones?.[zoneKey]?.[agentName];
+  const cells = mapConfig.zones?.[zoneKey];
   if (!cells || cells.length === 0) return null;
   const idx = hashString(agentName) % cells.length;
   return cells[idx];

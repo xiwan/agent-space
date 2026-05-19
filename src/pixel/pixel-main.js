@@ -1,16 +1,17 @@
 /**
- * pixel-main.js — pixel.html 入口
+ * pixel-main.js — pixel.html 入口 (v2.5.0)
  *
  * 流程:
- *   1. 加载 sprite → renderer.init
- *   2. 实例化 Sidebar (右栏卡片列表) + MapEditor (编辑器)
+ *   1. 加载 sprite → renderer.init (默认 paused, sprite 隐藏)
+ *   2. 实例化 Sidebar + MapEditor (global zones)
  *   3. 启动 BridgePoller, 每 5s 收到 cfg → renderer.setConfig + sidebar.setAgents
- *   4. selectedAgentName 单一 source: canvas/sidebar 双向 toggle
- *   5. selected 在新一轮 cfg 中消失 → 自动清成 null
- *   6. 背景切换 (v2.3.0): header select → renderer.setBackground + localStorage
- *   7. 编辑模式 (v2.4.0): header ✏ 按钮 → MapEditor.open / close;
- *      mapConfig 改变后通知 BridgePoller, 下次 onConfig 时使用 PathFinder 计算 path,
- *      传给 renderer.setConfig 让 sprite 沿路径走.
+ *      sidebar 卡片始终更新, 即便未 Start
+ *   4. ▶ Start 按钮: setSpritesVisible(true) + setPaused(false), sprite 出现
+ *      (BridgeAdapter 用 mapConfig 把每个 agent spawn 在 home zone, 然后按当前 state 走 path)
+ *   5. ⏸ Pause 按钮: setPaused(true), sprite 冻结
+ *   6. ✏ Edit 按钮: 进编辑模式 (sprite 隐藏 / overlay 显示)
+ *   7. 背景 select: 切换 mapConfig 来源
+ *   8. selected agent 单一 source, sidebar/canvas 双向 toggle
  */
 import { BridgePoller } from './BridgeAdapter.js';
 import { PixelRenderer } from './PixelRenderer.js';
@@ -18,7 +19,7 @@ import { Sidebar } from './Sidebar.js';
 import { MapEditor } from './MapEditor.js';
 import {
   loadMapConfig, saveMapConfig, emptyMapConfig,
-  getTargetCell, cellToPx, pxToCell, GRID_SIZE,
+  getTargetCell, cellToPx, pxToCell,
 } from './MapConfig.js';
 import { findPath } from './PathFinder.js';
 
@@ -53,6 +54,7 @@ async function main() {
   const bgSelectEl = document.getElementById('pixelBgSelect');
   const editBtnEl = document.getElementById('pixelEditBtn');
   const editToolbarEl = document.getElementById('pixelEditToolbar');
+  const startBtnEl = document.getElementById('pixelStartBtn');
 
   // === 选中状态 ===
   let selectedName = null;
@@ -65,22 +67,26 @@ async function main() {
   };
   const toggleSelected = (name) => setSelected(selectedName === name ? null : name);
 
-  // === 当前 bg + mapConfig 状态 ===
+  // === bg + mapConfig ===
   let currentBg = BG_DEFAULT;
   let mapConfig = null;
 
   const reloadMapConfig = () => {
     mapConfig = loadMapConfig(currentBg);
     poller.setMapConfig(mapConfig, getTargetCell, cellToPx);
-    renderer.setMapConfig(mapConfig); // for edit overlay
+    renderer.setMapConfig(mapConfig);
   };
 
-  // === renderer / sidebar / editor 实例 ===
+  // === renderer / sidebar / editor ===
   setStatus('loading sprites...');
   const renderer = new PixelRenderer(canvas, {
     assetPath: '/pixel',
     onAgentClick: (agent) => toggleSelected(agent.name),
   });
+  // v2.5.0: 默认 paused + sprite 隐藏
+  renderer.setPaused(true);
+  renderer.setSpritesVisible(false);
+
   const sidebar = new Sidebar(sidebarEl, {
     onToggle: (name) => toggleSelected(name),
   });
@@ -90,13 +96,9 @@ async function main() {
       saveMapConfig(currentBg, mapConfig);
       setStatus(`map saved for ${currentBg}`, 'ok');
     },
-    onChange: () => {
-      // mutate 同一对象, renderer 下一帧自动看到
-    },
+    onChange: () => {},
     onExit: () => {
-      // 退出编辑模式: 隐藏工具栏, 恢复 sprite
       renderer.setEditMode(false);
-      // poller 重读最新 mapConfig (可能用户没 save)
       poller.setMapConfig(mapConfig, getTargetCell, cellToPx);
       if (editBtnEl) editBtnEl.classList.remove('active');
     },
@@ -133,66 +135,120 @@ async function main() {
     await renderer.setBackground(BG_OPTIONS[currentBg].url);
   }
 
-  // === 编辑按钮 ===
+  // === Edit 按钮 ===
   if (editBtnEl && editor) {
     editBtnEl.addEventListener('click', () => {
       if (editor.isOpen()) {
         editor.close();
       } else {
-        // 进入编辑模式: 没 mapConfig 创建一份空的
         if (!mapConfig) mapConfig = emptyMapConfig();
-        const agentNames = lastAgents.map(a => a.name);
         renderer.setEditMode(true, mapConfig);
-        editor.open(mapConfig, agentNames);
+        editor.open(mapConfig);
         editBtnEl.classList.add('active');
       }
     });
   }
 
+  // === v2.5.0: Start/Pause 按钮 ===
+  const updateStartBtn = () => {
+    if (!startBtnEl) return;
+    if (!renderer.areSpritesVisible()) {
+      startBtnEl.textContent = '▶ Start';
+      startBtnEl.classList.remove('active');
+    } else if (renderer.isPaused()) {
+      startBtnEl.textContent = '▶ Resume';
+      startBtnEl.classList.remove('active');
+    } else {
+      startBtnEl.textContent = '⏸ Pause';
+      startBtnEl.classList.add('active');
+    }
+  };
+  updateStartBtn();
+  if (startBtnEl) {
+    startBtnEl.addEventListener('click', () => {
+      if (!renderer.areSpritesVisible()) {
+        // 第一次 Start: 显示 sprite + unpause + 触发一次 setConfig 立即 spawn
+        renderer.setSpritesVisible(true);
+        renderer.setPaused(false);
+        // 用最后一次 cfg 立即更新 (sprite 会出现在 BridgeAdapter 算好的位置 = home zone)
+        if (lastBridgeCfg) onConfigInternal(lastBridgeCfg, /*forceSpawn=*/true);
+      } else if (renderer.isPaused()) {
+        renderer.setPaused(false);
+        // resume: 让下次 onConfig 重算 path; 立即触发一次 (基于最近 cfg)
+        if (lastBridgeCfg) onConfigInternal(lastBridgeCfg);
+      } else {
+        renderer.setPaused(true);
+      }
+      updateStartBtn();
+    });
+  }
+
   // === BridgePoller ===
   let lastAgentCount = -1;
-  const poller = new BridgePoller({
-    intervalMs: POLL_INTERVAL_MS,
-    onConfig: (cfg) => {
-      lastAgents = cfg.agents || [];
+  let lastBridgeCfg = null;
 
-      // v2.4.0: 在 mapConfig 模式下, 给每个 agent 计算 path (起点 = sprite 当前位置 / 终点 = adapter 算好的 cell)
-      if (mapConfig) {
-        for (const a of lastAgents) {
-          // 找 sprite 当前位置 (pxToCell), 找目标 cell (从 a.x/a.y 反推)
-          const renderState = renderer.agents?.find(r => r.name === a.name);
-          const startPx = renderState ? [renderState.cx, renderState.cy] : [a.x, a.y];
-          const startCell = pxToCell(startPx[0], startPx[1], mapConfig.gridSize);
-          const endCell = pxToCell(a.x, a.y, mapConfig.gridSize);
-          const p = findPath(mapConfig.obstacles, startCell, endCell);
-          if (p) {
-            a.path = p;
-            a.pathGridSize = mapConfig.gridSize;
-          }
+  const onConfigInternal = (cfg, forceSpawn = false) => {
+    lastAgents = cfg.agents || [];
+    lastBridgeCfg = cfg;
+
+    // 路径计算: paused 时不算 (无意义); spritesVisible=false 时也不算 (省点 CPU);
+    // forceSpawn 时即便 sprite 还没存在也允许首帧 spawn, path 不重要 (起点=终点)
+    const willRender = renderer.areSpritesVisible() && !renderer.isPaused();
+    if (mapConfig && willRender) {
+      for (const a of lastAgents) {
+        const renderState = renderer.agents?.find(r => r.name === a.name);
+        const startPx = renderState ? [renderState.cx, renderState.cy] : [a.x, a.y];
+        const startCell = pxToCell(startPx[0], startPx[1], mapConfig.gridSize);
+        const endCell = pxToCell(a.x, a.y, mapConfig.gridSize);
+        const p = findPath(mapConfig.obstacles, startCell, endCell);
+        if (p) {
+          a.path = p;
+          a.pathGridSize = mapConfig.gridSize;
         }
       }
+    }
 
-      renderer.setConfig(cfg);
-      sidebar.setAgents(lastAgents);
-
-      if (selectedName && !lastAgents.find(a => a.name === selectedName)) {
-        setSelected(null);
+    // 但是: 第一次 spawn (forceSpawn 或 sprite 不存在), BridgeAdapter 已经把 a.x/a.y 算成了 home zone
+    // (因为 BridgePoller.setMapConfig 后, adaptToPixelConfig 走 mapConfig 路径)
+    // 这时不需要 path, 让 makeAgent 直接放在那里.
+    // 注: BridgeAdapter 给 busy 的 agent 算的是 work zone 而不是 home —— 这是 Q 的设计差异.
+    // 用户预期: Start 时 sprite 全部从 home 出现, 然后再走到对应状态位置.
+    // 实现方式: 在 forceSpawn 时, 先把 a.x/a.y 强制改为 home zone (临时 override),
+    // 让 sprite spawn 在 home; 然后下一帧 onConfig 自然会按真实 state 走过去.
+    if (forceSpawn && mapConfig) {
+      for (const a of lastAgents) {
+        const homeCell = getTargetCell(a.name, 'offline', mapConfig); // offline → home
+        if (homeCell) {
+          const [hx, hy] = cellToPx(homeCell[0], homeCell[1], mapConfig.gridSize);
+          a.x = hx;
+          a.y = hy;
+          a.path = null; // spawn 不走路, 直接出现
+        }
       }
+    }
 
-      // 编辑模式下, 如果 agentNames 列表更新了, 同步给 editor (但不强制重开)
-      if (editor && editor.isOpen()) {
-        // 重渲工具栏以反映可能的新 agent 列表
-        editor.agentNames = lastAgents.map(a => a.name);
-      }
+    renderer.setConfig(cfg);
+    sidebar.setAgents(lastAgents);
 
-      const n = lastAgents.length;
-      const ts = new Date().toLocaleTimeString();
-      setStatus(`${n} agents — last update ${ts}`, 'ok');
-      if (n !== lastAgentCount) lastAgentCount = n;
-    },
-    onError: (err) => {
-      setStatus(`bridge error: ${err.message}`, 'error');
-    },
+    if (selectedName && !lastAgents.find(a => a.name === selectedName)) {
+      setSelected(null);
+    }
+
+    if (editor && editor.isOpen()) {
+      // global zones 模式下不需要传 agentNames, 但若 editor 内部还引用就保持 fresh
+    }
+
+    const n = lastAgents.length;
+    const ts = new Date().toLocaleTimeString();
+    const runState = renderer.areSpritesVisible() ? (renderer.isPaused() ? 'paused' : 'running') : 'stopped';
+    setStatus(`${n} agents — ${runState} — last update ${ts}`, 'ok');
+    if (n !== lastAgentCount) lastAgentCount = n;
+  };
+
+  const poller = new BridgePoller({
+    intervalMs: POLL_INTERVAL_MS,
+    onConfig: (cfg) => onConfigInternal(cfg),
+    onError: (err) => setStatus(`bridge error: ${err.message}`, 'error'),
   });
 
   reloadMapConfig();

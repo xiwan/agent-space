@@ -61,7 +61,8 @@
     #pixelBgSelect:focus { outline: none; border-color: #60a5fa; }
 
     /* === v2.4.0: edit button + toolbar === */
-    #pixelEditBtn {
+    #pixelEditBtn,
+    #pixelStartBtn {
       background: #0f172a;
       color: #e2e8f0;
       border: 1px solid #475569;
@@ -71,11 +72,17 @@
       font-size: 12px;
       cursor: pointer;
     }
-    #pixelEditBtn:hover { border-color: #64748b; }
+    #pixelEditBtn:hover, #pixelStartBtn:hover { border-color: #64748b; }
     #pixelEditBtn.active {
       background: #facc15;
       color: #000;
       border-color: #facc15;
+    }
+    /* v2.5.0: Pause 状态视觉 (running 时按钮显示 "⏸ Pause" + 绿色) */
+    #pixelStartBtn.active {
+      background: #34d399;
+      color: #000;
+      border-color: #34d399;
     }
 
     #pixelEditToolbar {
@@ -311,6 +318,7 @@
     <header id="pixelHeader">
       <h1>PIXEL OFFICE — ACP Bridge</h1>
       <select id="pixelBgSelect" title="Office background"></select>
+      <button id="pixelStartBtn" title="Start / Pause simulation">▶ Start</button>
       <button id="pixelEditBtn" title="Toggle map editor">✏ Edit</button>
       <span class="spacer"></span>
       <span id="pixelStatus" data-kind="info">initializing...</span>

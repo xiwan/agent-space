@@ -1,21 +1,23 @@
 /**
- * MapEditor — 编辑模式状态机 + canvas 鼠标交互 + 工具栏 DOM
+ * MapEditor — 编辑模式状态机 + canvas 鼠标交互 + 工具栏 DOM (v2.5.0: 全局 zones)
  *
- * 不负责: A* 寻路 (PathFinder), 状态映射 (BridgeAdapter), 渲染 overlay (PixelRenderer).
+ * v2.5.0 变化:
+ *   - 删除 agent dropdown 和 _agent 字段
+ *   - zones 直接在 mapConfig 全局, 不再按 agent 区分
+ *   - eraser 清 obstacle + 清 zones 在该 cell 的占用
  *
  * 用法:
  *   const editor = new MapEditor(canvas, toolbarEl, {
  *     onSave: () => {},   // 用户点 save
- *     onChange: () => {}, // 任意 mutate 后 (用于 renderer 立即重绘 + 持久化)
+ *     onChange: () => {}, // 任意 mutate 后
  *     onExit: () => {},
  *   });
- *   editor.open(mapConfig, agentNames);  // 进入编辑模式
- *   editor.close();                      // 退出
+ *   editor.open(mapConfig);
+ *   editor.close();
  */
 
-import { setObstacle, setZoneCell, findZoneAt, ZONE_KEYS, GRID_SIZE } from './MapConfig.js';
+import { setObstacle, setZoneCell, ZONE_KEYS, GRID_SIZE } from './MapConfig.js';
 
-// v2.4.1: 'eraser' 与 blocked/zone tools 并列 — 涂任意 cell, 清 obstacle + 清当前 agent 全 zones
 const TOOLS = ['blocked', 'home', 'work', 'idle', 'eraser'];
 
 export class MapEditor {
@@ -34,25 +36,23 @@ export class MapEditor {
     this.onExit = opts.onExit || (() => {});
 
     this.mapConfig = null;
-    this.agentNames = [];
     this._open = false;
     this._tool = 'blocked';
-    this._agent = null;
     this._mouseDown = false;
     this._mouseButton = 0;
 
-    // 绑定 (后面 add/remove)
     this._onMouseDown = (e) => this._handleMouseDown(e);
     this._onMouseUp = () => { this._mouseDown = false; };
     this._onMouseMove = (e) => this._handleMouseMove(e);
     this._onContextMenu = (e) => { if (this._open) e.preventDefault(); };
   }
 
-  open(mapConfig, agentNames) {
+  /**
+   * @param {object} mapConfig
+   */
+  open(mapConfig) {
     if (this._open) return;
     this.mapConfig = mapConfig;
-    this.agentNames = Array.isArray(agentNames) ? agentNames.slice() : [];
-    this._agent = this.agentNames[0] || null;
     this._tool = 'blocked';
     this._open = true;
     this._renderToolbar();
@@ -79,9 +79,6 @@ export class MapEditor {
 
   isOpen() { return this._open; }
   getTool() { return this._tool; }
-  getAgent() { return this._agent; }
-
-  // === 工具栏渲染 ===
 
   _renderToolbar() {
     const tb = this.toolbar;
@@ -93,12 +90,6 @@ export class MapEditor {
           ${TOOLS.map(t => `<button class="me-tool-btn${t === this._tool ? ' active' : ''}" data-tool="${t}">${t}</button>`).join('')}
         </div>
       </div>
-      <div class="me-row">
-        <span class="me-label">Agent:</span>
-        <select class="me-agent">
-          ${this.agentNames.map(n => `<option value="${escapeHtml(n)}"${n === this._agent ? ' selected' : ''}>${escapeHtml(n)}</option>`).join('')}
-        </select>
-      </div>
       <div class="me-actions">
         <button class="me-btn me-save">💾 Save</button>
         <button class="me-btn me-reset">🗑 Reset</button>
@@ -109,7 +100,6 @@ export class MapEditor {
     tb.querySelectorAll('.me-tool-btn').forEach(b =>
       b.addEventListener('click', () => { this._tool = b.dataset.tool; this._renderToolbar(); })
     );
-    tb.querySelector('.me-agent').addEventListener('change', (e) => { this._agent = e.target.value; });
     tb.querySelector('.me-save').addEventListener('click', () => this.onSave());
     tb.querySelector('.me-reset').addEventListener('click', () => this._handleReset());
     tb.querySelector('.me-exit').addEventListener('click', () => this.close());
@@ -123,11 +113,9 @@ export class MapEditor {
         this.mapConfig.obstacles[r][c] = 0;
       }
     }
-    this.mapConfig.zones = { home: {}, work: {}, idle: {} };
+    this.mapConfig.zones = { home: [], work: [], idle: [] };
     this.onChange();
   }
-
-  // === 鼠标处理 ===
 
   _handleMouseDown(e) {
     this._mouseDown = true;
@@ -152,32 +140,20 @@ export class MapEditor {
     const row = Math.floor(my / gs);
     if (col < 0 || col >= this.mapConfig.cols || row < 0 || row >= this.mapConfig.rows) return;
 
-    const erase = this._mouseButton === 2; // 右键擦除
+    const erase = this._mouseButton === 2;
 
     if (this._tool === 'eraser') {
-      // v2.4.1: 显式 eraser tool — 清 obstacle + 清当前 agent 在 home/work/idle 该 cell
-      // (不依赖右键, 触屏友好). 不需要选 agent 也能清 obstacle.
+      // v2.5.0: eraser 清 obstacle + 清所有 3 zones 在该 cell 的占用 (global)
       setObstacle(this.mapConfig, col, row, false);
-      if (this._agent) {
-        for (const z of ZONE_KEYS) {
-          setZoneCell(this.mapConfig, z, this._agent, col, row, false);
-        }
+      for (const z of ZONE_KEYS) {
+        setZoneCell(this.mapConfig, z, col, row, false);
       }
     } else if (this._tool === 'blocked') {
       setObstacle(this.mapConfig, col, row, !erase);
     } else if (ZONE_KEYS.includes(this._tool)) {
-      if (!this._agent) return;
-      // 涂当前 agent + 当前 zone
-      // 如果右键: 移除该 agent 在该 zone 的此 cell
-      // 左键: 加进该 agent 在该 zone (但若该 cell 已属其他 agent 同 zone, 会同时存在 — 这是设计允许的多 agent 共享 cell)
-      setZoneCell(this.mapConfig, this._tool, this._agent, col, row, !erase);
+      // v2.5.0: 直接 toggle global zone, 不再需要 agent
+      setZoneCell(this.mapConfig, this._tool, col, row, !erase);
     }
     this.onChange();
   }
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/[<>&"']/g, c => ({
-    '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;',
-  }[c]));
 }

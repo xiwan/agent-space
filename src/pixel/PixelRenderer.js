@@ -286,6 +286,10 @@ export class PixelRenderer {
     this._editTool = null;         // 'clear' | 'blocked' | 'home' | 'work' | 'idle'
     this._editAgent = null;
 
+    // v2.5.0: paused / sprite visibility
+    this._paused = true;
+    this._spritesVisible = false;
+
     canvas.addEventListener('click', (e) => this._handleClick(e));
   }
 
@@ -329,9 +333,28 @@ export class PixelRenderer {
 
     const next = incoming.map(spec => {
       const prev = byName.get(spec.name);
-      if (!prev) return makeAgent(spec);
 
-      // 已存在: 更新目标位置, 保持当前位置不变 (会插值过去)
+      // v2.5.0: paused 时仍更新 metadata, 但保持位置 + path 不变
+      if (prev && this._paused) {
+        return {
+          ...prev,
+          // 接受 metadata 变化
+          state: spec.state,
+          color: spec.color,
+          description: spec.description,
+          domains: spec.domains,
+          active: spec.active,
+          // 但不动位置 / 走路状态 / path
+        };
+      }
+
+      if (!prev) {
+        // 新 agent: 即使 paused 也允许 spawn (sprite 出现) — 但默认 paused 时整个 sprite 不可见,
+        // 等用户 Start 后再 setSpritesVisible(true). spawn 位置就是 spec.x/y (BridgeAdapter 已用 mapConfig 算成 home).
+        return makeAgent(spec);
+      }
+
+      // 已存在 + 不 paused: 更新目标位置
       const moved = prev.tx !== spec.x || prev.ty !== spec.y;
       const newFacing = moved
         ? (spec.x > prev.cx ? 'right' : spec.x < prev.cx ? 'left' : prev.facing)
@@ -346,7 +369,6 @@ export class PixelRenderer {
         facing: newFacing,
         walking: moved,
         sitting: !moved && spec.state === 'busy',
-        // v2.4.0: 路径 - cell 序列 (px 中心点会在 _tick 中按 gridSize 转换); null = 直线插值
         path: spec.path && spec.path.length > 1 ? spec.path.slice() : null,
         pathIdx: 0,
         pathGridSize: spec.pathGridSize || 16,
@@ -384,6 +406,25 @@ export class PixelRenderer {
     this._editAgent = agentName || null;
   }
 
+  /**
+   * v2.5.0: 暂停模拟. paused=true 时 setConfig 仍然更新 agent 数据 (state/desc)
+   * 但不更新 cx/cy/walking, sprite 冻结在当前位置.
+   */
+  setPaused(on) {
+    this._paused = !!on;
+  }
+
+  /**
+   * v2.5.0: 控制 sprite 是否可见. 默认隐藏 (start 前).
+   * 不影响数据轮询, 仅影响 _draw 是否画 sprite.
+   */
+  setSpritesVisible(on) {
+    this._spritesVisible = !!on;
+  }
+
+  isPaused() { return this._paused; }
+  areSpritesVisible() { return this._spritesVisible; }
+
   start() {
     if (this._running) return;
     this._running = true;
@@ -402,6 +443,7 @@ export class PixelRenderer {
 
   _tick() {
     this.frame++;
+    if (this._paused) return; // v2.5.0: paused 不做位置插值, sprite 冻结
     const SPEED = 1.5; // 每帧像素
     for (const a of this.agents) {
       // v2.4.0: 有 path 则走 path (逐 cell 插值); 无 path 退化为直线插值
@@ -495,6 +537,11 @@ export class PixelRenderer {
       return;
     }
 
+    // v2.5.0: sprite 隐藏 (start 前) 直接 return, 只画背景
+    if (!this._spritesVisible) {
+      return;
+    }
+
     // y-sort agents (脚部 y 越大越靠前)
     const sorted = [...this.agents].sort((a, b) => a.cy - b.cy);
 
@@ -558,25 +605,17 @@ export class PixelRenderer {
       }
     }
 
-    // 3. zones (filter: only 当前 _editAgent, 否则全部半透明)
+    // 3. zones (v2.5.0: 全局, 一种颜色一个 zone)
     const ZONE_COLORS = {
       home: 'rgba(59, 130, 246, 0.55)',  // blue
       work: 'rgba(34, 197, 94, 0.55)',   // green
       idle: 'rgba(234, 179, 8, 0.55)',   // yellow
     };
-    const ZONE_COLORS_DIM = {
-      home: 'rgba(59, 130, 246, 0.20)',
-      work: 'rgba(34, 197, 94, 0.20)',
-      idle: 'rgba(234, 179, 8, 0.20)',
-    };
     for (const zoneKey of ['home', 'work', 'idle']) {
-      const zone = cfg.zones[zoneKey] || {};
-      for (const [agentName, cells] of Object.entries(zone)) {
-        const isActive = !this._editAgent || agentName === this._editAgent;
-        ctx.fillStyle = isActive ? ZONE_COLORS[zoneKey] : ZONE_COLORS_DIM[zoneKey];
-        for (const [c, r] of cells) {
-          ctx.fillRect(c * gs, r * gs, gs, gs);
-        }
+      const cells = cfg.zones[zoneKey] || [];
+      ctx.fillStyle = ZONE_COLORS[zoneKey];
+      for (const [c, r] of cells) {
+        ctx.fillRect(c * gs, r * gs, gs, gs);
       }
     }
 
