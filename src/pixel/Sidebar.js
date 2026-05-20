@@ -40,7 +40,7 @@ export class Sidebar {
     let initialTab = 'agents';
     try {
       const stored = (typeof localStorage !== 'undefined') ? localStorage.getItem(TAB_LS_KEY) : null;
-      if (stored === 'agents' || stored === 'history') initialTab = stored;
+      if (stored === 'agents' || stored === 'history' || stored === 'usage') initialTab = stored;
     } catch {}
     this._tab = initialTab;
 
@@ -70,8 +70,15 @@ export class Sidebar {
     return this.container.querySelector('.sidebar-history');
   }
 
+  /**
+   * v2.12.0: 由外部 (UsageView) 拿到 usage container 自己 render.
+   */
+  getUsageContainer() {
+    return this.container.querySelector('.sidebar-usage');
+  }
+
   _setTab(tab) {
-    if (tab !== 'agents' && tab !== 'history') return;
+    if (tab !== 'agents' && tab !== 'history' && tab !== 'usage') return;
     if (this._tab === tab) return;
     this._tab = tab;
     try {
@@ -86,9 +93,11 @@ export class Sidebar {
       <div class="sidebar-tabs">
         <button class="sidebar-tab" data-tab="agents">Agents</button>
         <button class="sidebar-tab" data-tab="history">History</button>
+        <button class="sidebar-tab" data-tab="usage">Usage</button>
       </div>
       <div class="sidebar-agents"></div>
       <div class="sidebar-history"></div>
+      <div class="sidebar-usage"></div>
     `;
     this.container.querySelectorAll('.sidebar-tab').forEach(btn => {
       btn.addEventListener('click', () => this._setTab(btn.dataset.tab));
@@ -105,8 +114,10 @@ export class Sidebar {
     });
     const a = this.container.querySelector('.sidebar-agents');
     const h = this.container.querySelector('.sidebar-history');
+    const u = this.container.querySelector('.sidebar-usage');
     if (a) a.style.display = this._tab === 'agents' ? '' : 'none';
     if (h) h.style.display = this._tab === 'history' ? '' : 'none';
+    if (u) u.style.display = this._tab === 'usage' ? '' : 'none';
   }
 
   _renderAgents() {

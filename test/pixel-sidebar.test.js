@@ -28,10 +28,12 @@ describe('Sidebar (v2.2.0)', () => {
   it('renders empty initially (no cards, but shell with tabs exists)', () => {
     expect(container.querySelectorAll('.pixel-card').length).toBe(0);
     // v2.10.0: shell 自带 tabs + agents/history 容器
+    // v2.12.0: 加 usage tab → 3 个
     expect(container.querySelector('.sidebar-tabs')).not.toBeNull();
-    expect(container.querySelectorAll('.sidebar-tab').length).toBe(2);
+    expect(container.querySelectorAll('.sidebar-tab').length).toBe(3);
     expect(container.querySelector('.sidebar-agents')).not.toBeNull();
     expect(container.querySelector('.sidebar-history')).not.toBeNull();
+    expect(container.querySelector('.sidebar-usage')).not.toBeNull();
   });
 
   it('setAgents renders one card per agent in order', () => {
@@ -195,5 +197,45 @@ describe('Sidebar (v2.2.0)', () => {
     new Sidebar(c2, { onTabChange });
     c2.querySelector('[data-tab="history"]').click();
     expect(onTabChange).toHaveBeenCalledWith('history');
+  });
+
+  // ============================================================
+  // v2.12.0: usage tab
+  // ============================================================
+  it('v2.12.0: clicking Usage tab shows usage container, hides others', () => {
+    const c2 = document.createElement('div');
+    document.body.appendChild(c2);
+    const sb = new Sidebar(c2);
+    c2.querySelector('[data-tab="usage"]').click();
+    expect(c2.querySelector('.sidebar-usage').style.display).toBe('');
+    expect(c2.querySelector('.sidebar-agents').style.display).toBe('none');
+    expect(c2.querySelector('.sidebar-history').style.display).toBe('none');
+    expect(sb.getTab()).toBe('usage');
+  });
+
+  it('v2.12.0: getUsageContainer returns the .sidebar-usage element', () => {
+    const c2 = document.createElement('div');
+    document.body.appendChild(c2);
+    const sb = new Sidebar(c2);
+    const u = sb.getUsageContainer();
+    expect(u).not.toBeNull();
+    expect(u.classList.contains('sidebar-usage')).toBe(true);
+  });
+
+  it('v2.12.0: localStorage persists "usage" tab choice', () => {
+    localStorage.setItem('pixel.sidebarTab', 'usage');
+    const c2 = document.createElement('div');
+    document.body.appendChild(c2);
+    const sb = new Sidebar(c2);
+    expect(sb.getTab()).toBe('usage');
+    expect(c2.querySelector('.sidebar-usage').style.display).toBe('');
+  });
+
+  it('v2.12.0: invalid tab in localStorage falls back to agents', () => {
+    localStorage.setItem('pixel.sidebarTab', 'garbage');
+    const c2 = document.createElement('div');
+    document.body.appendChild(c2);
+    const sb = new Sidebar(c2);
+    expect(sb.getTab()).toBe('agents');
   });
 });

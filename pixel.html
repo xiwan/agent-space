@@ -258,7 +258,8 @@
     }
 
     .sidebar-agents,
-    .sidebar-history {
+    .sidebar-history,
+    .sidebar-usage {
       flex: 1;
       overflow-y: auto;
       padding: 12px;
@@ -683,6 +684,172 @@
       color: #94a3b8;
     }
 
+    /* === v2.12.0: Usage tab === */
+    .usage-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .usage-hours {
+      background: #1e293b;
+      color: #e2e8f0;
+      border: 1px solid #475569;
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-family: monospace;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .usage-hours:focus { outline: none; border-color: #60a5fa; }
+    .usage-refresh {
+      background: #1e293b;
+      color: #e2e8f0;
+      border: 1px solid #475569;
+      border-radius: 4px;
+      padding: 4px 9px;
+      cursor: pointer;
+      font-family: monospace;
+      font-size: 14px;
+      line-height: 1;
+    }
+    .usage-refresh:hover:not(:disabled) { border-color: #64748b; }
+    .usage-refresh:disabled { opacity: 0.5; cursor: not-allowed; }
+    .usage-fetched {
+      font-size: 10px;
+      color: #64748b;
+      margin-left: auto;
+    }
+    .usage-error {
+      background: #422006;
+      color: #fca5a5;
+      border: 1px solid #7f1d1d;
+      border-radius: 4px;
+      padding: 8px;
+      font-size: 11px;
+    }
+    .usage-error-msg {
+      margin-bottom: 6px;
+      word-break: break-word;
+    }
+    .usage-retry {
+      background: #1e293b;
+      color: #e2e8f0;
+      border: 1px solid #475569;
+      border-radius: 4px;
+      padding: 3px 10px;
+      cursor: pointer;
+      font-family: monospace;
+      font-size: 11px;
+    }
+    .usage-empty {
+      font-size: 11px;
+      color: #64748b;
+      font-style: italic;
+      padding: 12px 4px;
+      text-align: center;
+    }
+
+    /* Summary 4 cards in 2x2 grid */
+    .usage-summary {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin-bottom: 14px;
+    }
+    .usage-metric {
+      background: #1e293b;
+      border-radius: 4px;
+      padding: 8px 10px;
+      border-left: 2px solid #475569;
+    }
+    .usage-metric-label {
+      font-size: 9px;
+      color: #94a3b8;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 3px;
+    }
+    .usage-metric-value {
+      font-size: 16px;
+      font-weight: 600;
+      color: #e2e8f0;
+      font-family: monospace;
+      line-height: 1.1;
+    }
+    .usage-metric-sub {
+      font-size: 9px;
+      color: #64748b;
+      margin-top: 3px;
+      font-family: monospace;
+    }
+    .usage-metric-cost { border-left-color: #475569; opacity: 0.6; }
+
+    /* By-model list */
+    .usage-models {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .usage-models-title {
+      font-size: 10px;
+      color: #94a3b8;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 2px;
+      cursor: help;
+    }
+    .usage-model-row {
+      background: #1e293b;
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+    .usage-model-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+    .usage-model-name {
+      font-size: 11px;
+      color: #e2e8f0;
+      font-family: monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+    .usage-model-calls {
+      font-size: 10px;
+      color: #94a3b8;
+      flex-shrink: 0;
+    }
+    .usage-bar-wrap {
+      position: relative;
+      height: 6px;
+      background: #0f172a;
+      border-radius: 2px;
+      overflow: hidden;
+      margin-bottom: 4px;
+    }
+    .usage-bar {
+      position: absolute;
+      left: 0;
+      top: 0;
+      height: 100%;
+      transition: width 200ms ease-out;
+    }
+    .usage-bar-total { background: #60a5fa; }
+    .usage-bar-cached { background: #22d3ee; opacity: 0.85; mix-blend-mode: screen; }
+    .usage-model-nums {
+      display: flex;
+      gap: 8px;
+      font-size: 9px;
+      color: #94a3b8;
+      font-family: monospace;
+    }
+
     /* === v2.8.0: 移动端完整适配 (≤768px) ===
        - header 紧凑化 (隐藏外链, 标题缩小)
        - canvas 占满宽度, 维持 6:5 比例
@@ -731,7 +898,8 @@
         max-height: 28vh; /* v2.10.0: 从 40vh 收紧给 composer 让位 */
       }
       .sidebar-agents,
-      .sidebar-history {
+      .sidebar-history,
+      .sidebar-usage {
         padding: 8px;
         padding-bottom: calc(8px + env(safe-area-inset-bottom));
       }
@@ -739,6 +907,12 @@
         font-size: 11px;
         padding: 6px 4px;
       }
+      /* v2.12.0: usage grid 移动端改 1 列 (4 cards 纵排) */
+      .usage-summary {
+        grid-template-columns: 1fr;
+        gap: 4px;
+      }
+      .usage-metric-value { font-size: 14px; }
       .pixel-card {
         padding: 8px 10px;
         margin-bottom: 6px;

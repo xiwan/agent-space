@@ -20,6 +20,7 @@ import { MapEditor } from './MapEditor.js';
 import { CommandComposer } from './CommandComposer.js';
 import { CommandClient } from './CommandClient.js';
 import { CommandHistory } from './CommandHistory.js';
+import { UsageView } from './UsageView.js';
 import {
   loadMapConfig, saveMapConfig, emptyMapConfig,
   loadMapConfigAsync, saveMapConfigAsync,
@@ -129,6 +130,11 @@ async function main() {
   }) : null;
 
   if (history) history.start();
+
+  // === v2.12.0: Usage tab ===
+  const usageContainer = sidebar.getUsageContainer();
+  const usage = usageContainer ? new UsageView(usageContainer) : null;
+  if (usage) usage.start();
 
   const editor = (editBtnEl && editToolbarEl) ? new MapEditor(canvas, editToolbarEl, {
     onSave: async () => {
