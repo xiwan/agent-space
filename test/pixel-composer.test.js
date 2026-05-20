@@ -200,16 +200,23 @@ describe('CommandComposer (DOM)', () => {
     expect(chips[1].classList.contains('active')).toBe(false);
   });
 
-  it('mode change to pipeline auto-selects all agents', () => {
+  it('mode change to pipeline preserves existing agents (≥2 minimum)', () => {
+    // v2.11.0 (A4): mode 切换不再清空全选, 而是保留交集 + 凑齐到 ≥2
     composer.setAvailableAgents([
       { name: 'kiro', state: 'idle' },
       { name: 'claude', state: 'busy' },
       { name: 'qwen', state: 'idle' },
     ]);
+    // 起始 single 模式: 只选 kiro
+    expect([...composer.getState().agents]).toEqual(['kiro']);
     container.querySelector('.cc-mode').value = 'parallel';
     container.querySelector('.cc-mode').dispatchEvent(new Event('change'));
     const active = [...container.querySelectorAll('.cc-agent.active')];
-    expect(active.length).toBe(3);
+    // 保留 kiro + 凑齐 1 个到 2 个 (从 availableAgents 头部补)
+    expect(active.length).toBe(2);
+    // kiro 必在
+    const activeNames = active.map(a => a.querySelector('input').value);
+    expect(activeNames).toContain('kiro');
   });
 
   it('Submit disabled when prompt empty', () => {
@@ -289,5 +296,203 @@ describe('CommandComposer (DOM)', () => {
     cb.checked = false;
     cb.dispatchEvent(new Event('change'));
     expect(container.querySelectorAll('.cc-step-prompt').length).toBe(0);
+  });
+
+  // ============================================================
+  // v2.11.0: A — keyboard + consistency
+  // ============================================================
+  it('A1: Cmd+Enter in prompt textarea triggers Submit', async () => {
+    const onSubmit = vi.fn().mockResolvedValue();
+    const c2 = new CommandComposer(container, { onSubmit });
+    c2.setAvailableAgents([{ name: 'kiro', state: 'idle' }]);
+    const ta = container.querySelector('.cc-prompt');
+    ta.value = 'do it';
+    ta.dispatchEvent(new Event('input'));
+    // metaKey = Cmd 在 Mac, ctrlKey = Ctrl 在 PC
+    const ev = new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true });
+    ta.dispatchEvent(ev);
+    await Promise.resolve();
+    expect(onSubmit).toHaveBeenCalled();
+  });
+
+  it('A1: Ctrl+Enter also triggers Submit', async () => {
+    const onSubmit = vi.fn().mockResolvedValue();
+    const c2 = new CommandComposer(container, { onSubmit });
+    c2.setAvailableAgents([{ name: 'kiro', state: 'idle' }]);
+    const ta = container.querySelector('.cc-prompt');
+    ta.value = 'do it';
+    ta.dispatchEvent(new Event('input'));
+    const ev = new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true });
+    ta.dispatchEvent(ev);
+    await Promise.resolve();
+    expect(onSubmit).toHaveBeenCalled();
+  });
+
+  it('A1: plain Enter does NOT submit (allows newline)', async () => {
+    const onSubmit = vi.fn().mockResolvedValue();
+    const c2 = new CommandComposer(container, { onSubmit });
+    c2.setAvailableAgents([{ name: 'kiro', state: 'idle' }]);
+    const ta = container.querySelector('.cc-prompt');
+    ta.value = 'do it';
+    ta.dispatchEvent(new Event('input'));
+    const ev = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    ta.dispatchEvent(ev);
+    await Promise.resolve();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('A1: Cmd+Enter does nothing when validateState fails (empty prompt)', async () => {
+    const onSubmit = vi.fn().mockResolvedValue();
+    const c2 = new CommandComposer(container, { onSubmit });
+    c2.setAvailableAgents([{ name: 'kiro', state: 'idle' }]);
+    const ta = container.querySelector('.cc-prompt');
+    // 不填 prompt
+    const ev = new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true });
+    ta.dispatchEvent(ev);
+    await Promise.resolve();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('A2: Esc in prompt clears prompt only (not mode/agents)', () => {
+    const c2 = new CommandComposer(container);
+    c2.setAvailableAgents([{ name: 'kiro', state: 'idle' }]);
+    const ta = container.querySelector('.cc-prompt');
+    ta.value = 'about to clear';
+    ta.dispatchEvent(new Event('input'));
+    expect(c2.getState().prompt).toBe('about to clear');
+    expect(c2.getState().agents.size).toBe(1);
+    const ev = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    ta.dispatchEvent(ev);
+    expect(c2.getState().prompt).toBe('');
+    // mode/agents 保留
+    expect(c2.getState().mode).toBe('single');
+    expect(c2.getState().agents.size).toBe(1);
+  });
+
+  it('A3: typing in prompt clears prior error status', () => {
+    const c2 = new CommandComposer(container);
+    c2.setAvailableAgents([{ name: 'kiro', state: 'idle' }]);
+    const status = container.querySelector('.cc-status');
+    status.textContent = 'submit failed: oops';
+    status.dataset.kind = 'error';
+    const ta = container.querySelector('.cc-prompt');
+    ta.value = 'x';
+    ta.dispatchEvent(new Event('input'));
+    expect(status.textContent).toBe('');
+    expect(status.dataset.kind).toBe('info');
+  });
+
+  it('A4: pipeline → pipeline preserves agent intersection', () => {
+    const c2 = new CommandComposer(container);
+    c2.setAvailableAgents([
+      { name: 'a', state: 'idle' },
+      { name: 'b', state: 'idle' },
+      { name: 'c', state: 'idle' },
+    ]);
+    container.querySelector('.cc-mode').value = 'sequence';
+    container.querySelector('.cc-mode').dispatchEvent(new Event('change'));
+    // sequence 凑齐到 ≥2 (从头部补 a, b)
+    const seqAgents = [...c2.getState().agents];
+    expect(seqAgents.length).toBeGreaterThanOrEqual(2);
+    // 切到 parallel: 应保留同样的 agents
+    container.querySelector('.cc-mode').value = 'parallel';
+    container.querySelector('.cc-mode').dispatchEvent(new Event('change'));
+    expect([...c2.getState().agents]).toEqual(seqAgents);
+  });
+
+  it('A4: single→pipeline keeps the single agent + pads to 2', () => {
+    const c2 = new CommandComposer(container);
+    c2.setAvailableAgents([
+      { name: 'a', state: 'idle' },
+      { name: 'b', state: 'idle' },
+      { name: 'c', state: 'idle' },
+    ]);
+    // 切 b
+    container.querySelector(`input[value="b"]`).click();
+    expect([...c2.getState().agents]).toEqual(['b']);
+    container.querySelector('.cc-mode').value = 'parallel';
+    container.querySelector('.cc-mode').dispatchEvent(new Event('change'));
+    const after = [...c2.getState().agents];
+    expect(after.length).toBe(2);
+    expect(after).toContain('b');
+  });
+
+  it('A4: pipeline→single keeps only first selected agent', () => {
+    const c2 = new CommandComposer(container);
+    c2.setAvailableAgents([
+      { name: 'a', state: 'idle' },
+      { name: 'b', state: 'idle' },
+      { name: 'c', state: 'idle' },
+    ]);
+    container.querySelector('.cc-mode').value = 'sequence';
+    container.querySelector('.cc-mode').dispatchEvent(new Event('change'));
+    // sequence 默认凑 2 个
+    expect(c2.getState().agents.size).toBeGreaterThanOrEqual(2);
+    container.querySelector('.cc-mode').value = 'single';
+    container.querySelector('.cc-mode').dispatchEvent(new Event('change'));
+    expect(c2.getState().agents.size).toBe(1);
+  });
+
+  // ============================================================
+  // v2.11.0: B — prompt area sizing
+  // ============================================================
+  it('B1: prompt textarea has rows=3 default', () => {
+    const c2 = new CommandComposer(container);
+    expect(container.querySelector('.cc-prompt').getAttribute('rows')).toBe('3');
+  });
+
+  it('B3: per-step prompt is textarea (not input)', () => {
+    const c2 = new CommandComposer(container);
+    c2.setAvailableAgents([
+      { name: 'a', state: 'idle' },
+      { name: 'b', state: 'idle' },
+    ]);
+    container.querySelector('.cc-mode').value = 'sequence';
+    container.querySelector('.cc-mode').dispatchEvent(new Event('change'));
+    const stepEls = container.querySelectorAll('.cc-step-prompt');
+    expect(stepEls.length).toBeGreaterThan(0);
+    stepEls.forEach(el => {
+      expect(el.tagName).toBe('TEXTAREA');
+    });
+  });
+
+  // ============================================================
+  // v2.11.0: C — agent chip visualization
+  // ============================================================
+  it('C1: agent chip has state dot with state-matching background', () => {
+    const c2 = new CommandComposer(container);
+    c2.setAvailableAgents([
+      { name: 'a', state: 'busy' },
+      { name: 'b', state: 'idle' },
+      { name: 'c', state: 'offline' },
+      { name: 'd', state: 'error' },
+    ]);
+    const chips = container.querySelectorAll('.cc-agent');
+    expect(chips.length).toBe(4);
+    // 每个 chip 必含 .cc-agent-dot, style.background 非空
+    chips.forEach(chip => {
+      const dot = chip.querySelector('.cc-agent-dot');
+      expect(dot).not.toBeNull();
+      expect(dot.style.background).toBeTruthy();
+    });
+    // 颜色检查 (CSS color RGB)
+    const busyDot = chips[0].querySelector('.cc-agent-dot');
+    expect(busyDot.style.background.toLowerCase()).toMatch(/eab308|234, 179, 8/);
+  });
+
+  it('C1: chip has class matching agent state', () => {
+    const c2 = new CommandComposer(container);
+    c2.setAvailableAgents([
+      { name: 'a', state: 'busy' },
+      { name: 'b', state: 'offline' },
+    ]);
+    const chips = container.querySelectorAll('.cc-agent');
+    expect(chips[0].classList.contains('cc-agent-busy')).toBe(true);
+    expect(chips[1].classList.contains('cc-agent-offline')).toBe(true);
+  });
+
+  it('C4: empty agent list shows "waiting for agent list…"', () => {
+    const c2 = new CommandComposer(container);
+    expect(container.querySelector('.cc-empty').textContent).toMatch(/waiting for agent list/);
   });
 });

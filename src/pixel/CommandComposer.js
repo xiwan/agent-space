@@ -25,6 +25,25 @@ function defaultPerStepPrompts(mode) {
   return mode === 'sequence';
 }
 
+// v2.11.0: state 颜色 (与 PixelRenderer.STATE_COLORS 对齐)
+const STATE_DOT_COLORS = {
+  busy: '#eab308',
+  idle: '#10b981',
+  offline: '#9ca3af',
+  error: '#ef4444',
+  unknown: '#64748b',
+};
+
+/**
+ * v2.11.0: textarea 自适应高度. 调用方在 input 事件里调.
+ * 重置高度到 auto 让 scrollHeight 反映真实内容, 然后限制到 maxPx.
+ */
+function autoResizeTextarea(el, maxPx = 200) {
+  if (!el) return;
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, maxPx) + 'px';
+}
+
 /**
  * 纯函数: 把 state 变成 { endpoint, body }, 或抛出校验错误.
  * 单测可直接 import.
@@ -145,13 +164,32 @@ export class CommandComposer {
 
   _setMode(mode) {
     if (this._state.mode === mode) return;
+    const prevMode = this._state.mode;
     this._state.mode = mode;
-    // mode 切换默认: single → 单选第一个; pipeline → 全选 enabled
-    this._state.agents.clear();
+    // v2.11.0 (A4): mode 切换不再粗暴清空 agents.
+    //   - 先过滤至当前 availableAgents
+    //   - single 且 size>1 → 仅留第一个 (优先保留之前已选的, 否则用 availableAgents[0])
+    //   - pipeline (sequence/parallel/race/conversation) 且 size<2 → 从 availableAgents 头部补齐到 ≥2
+    const valid = new Set(this._availableAgents.map(a => a.name));
+    for (const n of [...this._state.agents]) {
+      if (!valid.has(n)) this._state.agents.delete(n);
+    }
     if (mode === 'single') {
-      if (this._availableAgents[0]) this._state.agents.add(this._availableAgents[0].name);
+      if (this._state.agents.size > 1) {
+        const keep = [...this._state.agents][0];
+        this._state.agents.clear();
+        this._state.agents.add(keep);
+      } else if (this._state.agents.size === 0 && this._availableAgents[0]) {
+        this._state.agents.add(this._availableAgents[0].name);
+      }
     } else {
-      for (const a of this._availableAgents) this._state.agents.add(a.name);
+      // pipeline 模式需要 ≥2
+      if (this._state.agents.size < 2) {
+        for (const a of this._availableAgents) {
+          if (this._state.agents.size >= 2) break;
+          this._state.agents.add(a.name);
+        }
+      }
     }
     // sync: 非 single 锁 async
     if (mode !== 'single') this._state.sync = 'async';
@@ -248,7 +286,7 @@ export class CommandComposer {
       </div>
 
       <div class="cc-row cc-row-prompt">
-        <textarea class="cc-prompt" rows="2" placeholder="${promptLabel} — what should agent(s) do?">${s.prompt}</textarea>
+        <textarea class="cc-prompt" rows="3" placeholder="${promptLabel} — what should agent(s) do?  (Cmd/Ctrl+Enter to submit, Esc to clear)">${escapeHtml(s.prompt)}</textarea>
         <div class="cc-step-prompts"></div>
       </div>
 
@@ -277,8 +315,37 @@ export class CommandComposer {
     const promptEl = this.container.querySelector('.cc-prompt');
     promptEl.addEventListener('input', (e) => {
       this._state.prompt = e.target.value;
+      autoResizeTextarea(e.target, 200);
+      // A3: 用户继续输入 → 清掉残留的 error 状态
+      const statusEl = this.container.querySelector('.cc-status');
+      if (statusEl && statusEl.dataset.kind === 'error') {
+        statusEl.textContent = '';
+        statusEl.dataset.kind = 'info';
+      }
       this._renderSubmitState();
     });
+    // A1/A2: 键盘快捷键
+    promptEl.addEventListener('keydown', (e) => {
+      // Cmd/Ctrl+Enter → Submit (前提 validate 通过)
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        if (validateState(this._state).length === 0 && !this._submitting) {
+          this._handleSubmit();
+        }
+        return;
+      }
+      // Esc → 仅清 prompt (不动 mode/agents)
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        this._state.prompt = '';
+        e.target.value = '';
+        autoResizeTextarea(e.target, 200);
+        this._renderSubmitState();
+      }
+    });
+    // 初始挂载后立刻自适应一次 (回填 prompt 时 textarea 内容已就位)
+    autoResizeTextarea(promptEl, 200);
+
     this.container.querySelector('.cc-submit').addEventListener('click', () => this._handleSubmit());
     this.container.querySelector('.cc-reset').addEventListener('click', () => {
       this._state.prompt = '';
@@ -295,16 +362,21 @@ export class CommandComposer {
     const wrap = this.container.querySelector('.cc-agents');
     if (!wrap) return;
     if (this._availableAgents.length === 0) {
-      wrap.innerHTML = '<span class="cc-empty">no agents available</span>';
+      // C4: 友好空态文案
+      wrap.innerHTML = '<span class="cc-empty">waiting for agent list…</span>';
       return;
     }
     const isSingle = this._state.mode === 'single';
     wrap.innerHTML = this._availableAgents.map(a => {
       const checked = this._state.agents.has(a.name) ? ' checked' : '';
-      const cls = `cc-agent cc-agent-${a.state || 'unknown'}${checked ? ' active' : ''}`;
-      return `<label class="${cls}">
-        <input type="${isSingle ? 'radio' : 'checkbox'}" name="cc-agent" value="${a.name}"${checked} />
-        <span>${escapeHtml(a.name)}</span>
+      const stateKey = a.state || 'unknown';
+      const cls = `cc-agent cc-agent-${stateKey}${checked ? ' active' : ''}`;
+      // C1: 左侧 4×4 像素方块 (state color)
+      const dotColor = STATE_DOT_COLORS[stateKey] || STATE_DOT_COLORS.unknown;
+      return `<label class="${cls}" title="${escapeAttr(a.name)} (${stateKey})">
+        <span class="cc-agent-dot" style="background:${dotColor}"></span>
+        <input type="${isSingle ? 'radio' : 'checkbox'}" name="cc-agent" value="${escapeAttr(a.name)}"${checked} />
+        <span class="cc-agent-name">${escapeHtml(a.name)}</span>
       </label>`;
     }).join('');
     wrap.querySelectorAll('input').forEach(input => {
@@ -326,18 +398,21 @@ export class CommandComposer {
       wrap.innerHTML = '';
       return;
     }
+    // B3: per-step input → textarea (1 行起步, 自适应到 max 120px)
     wrap.innerHTML = agents.map(name => `
       <div class="cc-step">
         <span class="cc-step-name">${escapeHtml(name)}</span>
-        <input class="cc-step-prompt" data-agent="${escapeAttr(name)}" type="text"
-               value="${escapeAttr(s.stepPrompts[name] ?? '')}"
-               placeholder="prompt for ${escapeHtml(name)}" />
+        <textarea class="cc-step-prompt" data-agent="${escapeAttr(name)}" rows="1"
+               placeholder="prompt for ${escapeAttr(name)}">${escapeHtml(s.stepPrompts[name] ?? '')}</textarea>
       </div>
     `).join('');
     wrap.querySelectorAll('.cc-step-prompt').forEach(inp => {
+      // 初始自适应
+      autoResizeTextarea(inp, 120);
       inp.addEventListener('input', (e) => {
         const agent = e.target.dataset.agent;
         s.stepPrompts[agent] = e.target.value;
+        autoResizeTextarea(e.target, 120);
       });
     });
   }

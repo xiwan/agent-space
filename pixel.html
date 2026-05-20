@@ -338,6 +338,9 @@
       display: flex;
       flex-direction: column;
       gap: 8px;
+      /* v2.11.0 (B4): 整体高度限制, 防 textarea 拉太高挤扁 canvas */
+      max-height: 35vh;
+      overflow: auto;
     }
     .cc-row {
       display: flex;
@@ -386,14 +389,14 @@
     .cc-agent {
       display: inline-flex;
       align-items: center;
-      gap: 4px;
+      gap: 5px;
       background: #1e293b;
       border: 1px solid #334155;
       border-radius: 12px;
-      padding: 3px 10px;
+      padding: 4px 10px;
       font-size: 11px;
       cursor: pointer;
-      color: #94a3b8;
+      color: #cbd5e1;
     }
     .cc-agent:hover { border-color: #475569; }
     .cc-agent.active {
@@ -402,7 +405,19 @@
       border-color: #60a5fa;
     }
     .cc-agent input { margin: 0; cursor: pointer; }
-    .cc-agent-offline { opacity: 0.5; }
+    /* v2.11.0 (C1): state dot */
+    .cc-agent-dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 1px; /* 像素方块感, 不要圆 */
+      flex-shrink: 0;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.4) inset;
+    }
+    /* v2.11.0 (C2): per-state visual */
+    .cc-agent-offline { opacity: 0.55; }
+    .cc-agent-error .cc-agent-name { color: #fca5a5; }
+    .cc-agent-busy .cc-agent-name { color: #fde68a; }
     .cc-empty { font-size: 11px; color: #64748b; font-style: italic; }
 
     .cc-row-prompt {
@@ -420,7 +435,11 @@
       font-family: monospace;
       font-size: 12px;
       resize: vertical;
-      min-height: 40px;
+      /* v2.11.0 (B1+B2): 默认 3 行, 自适应到 max 200px */
+      min-height: 60px;
+      max-height: 200px;
+      box-sizing: border-box;
+      line-height: 1.4;
     }
     .cc-prompt:focus { outline: none; border-color: #60a5fa; }
     .cc-step-prompts:not(:empty) {
@@ -432,13 +451,14 @@
     }
     .cc-step {
       display: flex;
-      align-items: center;
+      align-items: flex-start; /* v2.11.0: textarea 多行时对齐 top */
       gap: 8px;
     }
     .cc-step-name {
       font-size: 11px;
       color: #94a3b8;
       min-width: 70px;
+      padding-top: 5px; /* 对齐 textarea 第一行 */
     }
     .cc-step-prompt {
       flex: 1;
@@ -449,6 +469,12 @@
       padding: 4px 8px;
       font-family: monospace;
       font-size: 11px;
+      /* v2.11.0 (B3): textarea 自适应 (1 行起步, max 120px) */
+      resize: vertical;
+      min-height: 24px;
+      max-height: 120px;
+      box-sizing: border-box;
+      line-height: 1.4;
     }
     .cc-step-prompt:focus { outline: none; border-color: #60a5fa; }
 
@@ -529,6 +555,7 @@
       font-size: 10px;
     }
     .ch-prompt {
+      /* v2.10.0 legacy — replaced by .ch-prompt-block in v2.11.0, kept for back-compat */
       color: #cbd5e1;
       margin-top: 4px;
       line-height: 1.3;
@@ -540,6 +567,7 @@
       font-size: 10px;
     }
     .ch-output {
+      /* v2.10.0 legacy — kept for back-compat */
       margin-top: 6px;
     }
     .ch-output summary {
@@ -557,6 +585,82 @@
       max-height: 200px;
       overflow: auto;
       color: #cbd5e1;
+    }
+
+    /* === v2.11.0: prompt + conversation + raw blocks === */
+    .ch-prompt-block, .ch-convo-block, .ch-raw-block {
+      margin-top: 5px;
+    }
+    .ch-prompt-block > summary,
+    .ch-convo-block > summary,
+    .ch-raw-block > summary {
+      font-size: 10px;
+      color: #94a3b8;
+      cursor: pointer;
+      padding: 2px 0;
+      list-style: none;
+      user-select: none;
+    }
+    .ch-prompt-block > summary::-webkit-details-marker,
+    .ch-convo-block > summary::-webkit-details-marker,
+    .ch-raw-block > summary::-webkit-details-marker { display: none; }
+    .ch-prompt-block[open] > summary,
+    .ch-convo-block[open] > summary { color: #cbd5e1; }
+    .ch-prompt-full {
+      background: #0f172a;
+      padding: 6px 8px;
+      margin: 4px 0 0;
+      border-radius: 3px;
+      font-size: 11px;
+      max-height: 180px;
+      overflow: auto;
+      color: #e2e8f0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.4;
+    }
+    .ch-turns {
+      margin-top: 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .ch-turn {
+      background: #0f172a;
+      border-left: 3px solid #475569;
+      border-radius: 0 3px 3px 0;
+      padding: 4px 8px;
+    }
+    .ch-turn-head {
+      font-size: 10px;
+      font-weight: 600;
+      color: #60a5fa;
+      letter-spacing: 0.03em;
+      margin-bottom: 2px;
+    }
+    .ch-turn-text {
+      margin: 0;
+      font-size: 11px;
+      color: #e2e8f0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.4;
+      max-height: 240px;
+      overflow: auto;
+    }
+    .ch-no-content {
+      font-style: italic;
+      margin-top: 5px;
+    }
+    .ch-raw-block pre {
+      background: #0f172a;
+      padding: 6px;
+      margin-top: 4px;
+      border-radius: 3px;
+      font-size: 10px;
+      max-height: 200px;
+      overflow: auto;
+      color: #94a3b8;
     }
 
     /* === v2.8.0: 移动端完整适配 (≤768px) ===
@@ -632,6 +736,8 @@
         padding: 8px 10px;
         gap: 6px;
         padding-bottom: calc(8px + env(safe-area-inset-bottom));
+        /* v2.11.0 (B4 mobile): 整体高度 40vh */
+        max-height: 40vh;
       }
       .cc-row-controls .cc-field { font-size: 10px; }
       .cc-mode, .cc-sync, .cc-max-turns {
@@ -640,9 +746,15 @@
       }
       .cc-prompt {
         font-size: 12px;
-        min-height: 36px;
+        /* v2.11.0 (B1+B2 mobile): 移动端 max 120px */
+        min-height: 56px;
+        max-height: 120px;
       }
-      .cc-agent { padding: 2px 8px; font-size: 10px; }
+      .cc-step-prompt {
+        max-height: 100px;
+      }
+      /* v2.11.0 (C3): chip hit-area 加大 */
+      .cc-agent { padding: 5px 12px; font-size: 11px; min-height: 28px; }
       .cc-submit, .cc-reset {
         min-height: 32px;
         padding: 6px 12px;
