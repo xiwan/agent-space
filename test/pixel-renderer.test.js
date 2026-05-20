@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { PixelRenderer, BUSY_EMOJI_THEMES, pickBusyEmojiPool, pickBusyEmojis } from '../src/pixel/PixelRenderer.js';
+import { PixelRenderer, BUSY_EMOJI_THEMES, pickBusyEmojiPool, pickBusyEmojis, computeFrameInfo } from '../src/pixel/PixelRenderer.js';
 
 // happy-dom doesn't support canvas 2d context; mock it
 function makeCanvas() {
@@ -637,5 +637,175 @@ describe('PixelRenderer v2.6.0', () => {
       expect(counts[2]).toBeGreaterThan(200);  // 至少 20% (放宽自 40%)
       expect(counts[5]).toBeLessThan(100);     // 至多 10% (实际 2%)
     });
+  });
+});
+
+// ============================================================
+// v2.13.3: computeFrameInfo (sprite frame layout)
+// ============================================================
+describe('v2.13.3 computeFrameInfo', () => {
+  // sheet: 7 cols × 3 rows, FRAME_W=16, FRAME_H=32
+  // cols: 0-2 walk, 3-4 idle, 5-6 work
+  // rows: 0=down, 1=up, 2=side (left=flipX)
+
+  it('walking down: cycles col 0,1,2 every 6 frames', () => {
+    const a = { facing: 'down', walking: true, state: 'busy' };
+    expect(computeFrameInfo(a, 0).sx).toBe(0 * 16);   // col 0
+    expect(computeFrameInfo(a, 6).sx).toBe(1 * 16);   // col 1
+    expect(computeFrameInfo(a, 12).sx).toBe(2 * 16);  // col 2
+    expect(computeFrameInfo(a, 18).sx).toBe(0 * 16);  // 回到 col 0
+    // sy 决定方向
+    expect(computeFrameInfo(a, 0).sy).toBe(0 * 32);   // row 0 = down
+    expect(computeFrameInfo(a, 0).flipX).toBe(false);
+  });
+
+  it('walking up: row 1', () => {
+    const a = { facing: 'up', walking: true, state: 'idle' };
+    expect(computeFrameInfo(a, 0).sy).toBe(1 * 32);
+    expect(computeFrameInfo(a, 0).flipX).toBe(false);
+  });
+
+  it('walking right: row 2 no flip', () => {
+    const a = { facing: 'right', walking: true, state: 'idle' };
+    expect(computeFrameInfo(a, 0).sy).toBe(2 * 32);
+    expect(computeFrameInfo(a, 0).flipX).toBe(false);
+  });
+
+  it('walking left: row 2 with flipX', () => {
+    const a = { facing: 'left', walking: true, state: 'idle' };
+    expect(computeFrameInfo(a, 0).sy).toBe(2 * 32);
+    expect(computeFrameInfo(a, 0).flipX).toBe(true);
+  });
+
+  it('standstill busy: col 5/6 alternates every 24 frames', () => {
+    const a = { facing: 'down', walking: false, state: 'busy' };
+    expect(computeFrameInfo(a, 0).sx).toBe(5 * 16);    // col 5
+    expect(computeFrameInfo(a, 24).sx).toBe(6 * 16);   // col 6
+    expect(computeFrameInfo(a, 48).sx).toBe(5 * 16);   // 回 col 5
+  });
+
+  it('standstill idle: col 3/4', () => {
+    const a = { facing: 'down', walking: false, state: 'idle' };
+    expect(computeFrameInfo(a, 0).sx).toBe(3 * 16);
+    expect(computeFrameInfo(a, 24).sx).toBe(4 * 16);
+  });
+
+  it('standstill offline / error use idle frames (col 3/4)', () => {
+    const offline = { facing: 'down', walking: false, state: 'offline' };
+    const error = { facing: 'down', walking: false, state: 'error' };
+    expect(computeFrameInfo(offline, 0).sx).toBe(3 * 16);
+    expect(computeFrameInfo(error, 0).sx).toBe(3 * 16);
+  });
+
+  it('walking takes precedence over state (busy walking uses walk frames)', () => {
+    const a = { facing: 'down', walking: true, state: 'busy' };
+    // 不应触发 busy work frames (col 5-6)
+    expect(computeFrameInfo(a, 0).sx).toBe(0 * 16);
+    expect(computeFrameInfo(a, 6).sx).toBe(1 * 16);
+  });
+
+  it('yOffset is 0 (sitting deprecated)', () => {
+    const a = { facing: 'down', walking: false, state: 'idle' };
+    expect(computeFrameInfo(a, 0).yOffset).toBe(0);
+  });
+
+  it('legacy sitting field is ignored', () => {
+    const a = { facing: 'down', walking: false, state: 'idle', sitting: true };
+    // sitting 不再影响帧选择
+    expect(computeFrameInfo(a, 0).sx).toBe(3 * 16);
+    expect(computeFrameInfo(a, 0).yOffset).toBe(0);
+  });
+});
+
+// ============================================================
+// v2.13.3: setPathFinder accepts stateToZone + _tryWander uses it
+// ============================================================
+describe('v2.13.3 setPathFinder + _tryWander', () => {
+  let renderer;
+  beforeEach(() => {
+    renderer = new PixelRenderer(makeCanvas());
+  });
+
+  it('setPathFinder accepts stateToZone, stored on instance', () => {
+    const stateToZone = (s) => 'home';
+    renderer.setPathFinder({ findPath: () => null, getZoneCells: () => [], stateToZone });
+    expect(renderer._stateToZone).toBe(stateToZone);
+  });
+
+  it('_tryWander uses injected stateToZone for zone key', () => {
+    const calls = [];
+    const stateToZone = (s) => {
+      calls.push(s);
+      return s === 'busy' ? 'work' : 'idle';
+    };
+    renderer.setPathFinder({
+      findPath: () => null,  // 不重要 — 只关心 zoneKey 决策
+      getZoneCells: () => [],
+      stateToZone,
+    });
+    renderer._mapConfig = { gridSize: 16 };
+    const a = { state: 'busy', cx: 0, cy: 0, path: null };
+    renderer._tryWander(a);
+    expect(calls).toContain('busy');
+  });
+
+  it('_tryWander falls back to legacy logic when stateToZone not injected', () => {
+    renderer.setPathFinder({
+      findPath: () => null,
+      getZoneCells: (key) => {
+        // 验证 key
+        if (key === 'work' || key === 'idle') return [];
+        throw new Error(`unexpected zoneKey: ${key}`);
+      },
+    });
+    renderer._mapConfig = { gridSize: 16 };
+    const busyAgent = { state: 'busy', cx: 0, cy: 0, path: null };
+    const idleAgent = { state: 'idle', cx: 0, cy: 0, path: null };
+    expect(() => renderer._tryWander(busyAgent)).not.toThrow();
+    expect(() => renderer._tryWander(idleAgent)).not.toThrow();
+  });
+});
+
+// ============================================================
+// v2.13.3: _tick fallback no-path stays put (no straight-line through walls)
+// ============================================================
+describe('v2.13.3 _tick fallback: no path → stay put', () => {
+  let renderer;
+  beforeEach(() => {
+    renderer = new PixelRenderer(makeCanvas());
+    // 让 _tick 不被 paused 拦
+    renderer._paused = false;
+  });
+
+  it('agent without path does NOT drift toward tx/ty', () => {
+    const agent = {
+      name: 'a', cx: 100, cy: 100, tx: 500, ty: 500,  // tx/ty 远在另一区
+      facing: 'down', walking: true, state: 'idle',
+      path: null, pathIdx: 0, wanderUntil: Date.now() + 999999, // 阻止 _tryWander
+    };
+    renderer.agents = [agent];
+    // 跑几个 tick
+    for (let i = 0; i < 10; i++) renderer._tick();
+    // cx/cy 不应朝 500 移动
+    expect(agent.cx).toBe(100);
+    expect(agent.cy).toBe(100);
+    // walking 应被清成 false (no path 到达表态)
+    expect(agent.walking).toBe(false);
+    // tx/ty 同步到 cx/cy 防止后续触发
+    expect(agent.tx).toBe(100);
+    expect(agent.ty).toBe(100);
+  });
+
+  it('agent with path still walks normally (regression check)', () => {
+    const agent = {
+      name: 'a', cx: 100, cy: 100, tx: 100, ty: 100,
+      facing: 'down', walking: true, state: 'idle',
+      path: [[6, 6], [7, 6], [8, 6]], pathIdx: 0, pathGridSize: 16,
+      wanderUntil: 0,
+    };
+    renderer.agents = [agent];
+    renderer._tick();
+    // path 走向 cell [6,6] 中心 = (104, 104) — 应朝那移动
+    expect(agent.cx).toBeGreaterThan(100);
   });
 });

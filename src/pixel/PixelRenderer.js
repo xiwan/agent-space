@@ -194,29 +194,37 @@ class SpriteSheet {
  * 计算 sprite 当前应该用 sheet 哪一帧 (纯函数, 不画).
  * drawCharacter 和 drawOutline 共享此结果, 保证描边和 sprite 用同一帧.
  *
- * @param agent { facing, walking, sitting, state }
+ * v2.13.3: 帧布局重排
+ *   sheet 112×96 = 7 cols × 3 rows, FRAME_W=16, FRAME_H=32
+ *   col 0,1,2 = walking 3 帧
+ *   col 3,4   = idle 站立 2 帧 (state ∈ idle/offline/error 用)
+ *   col 5,6   = work 站立 2 帧 (state === busy 用)
+ *   row 0=down, 1=up, 2=side (left=flip)
+ *
+ * @param agent { facing, walking, state }
  * @param frame 全局帧数
  * @returns {{ sx, sy, flipX, yOffset }}
  */
-function computeFrameInfo(agent, frame) {
-  let rowY = 0;
-  let flipX = false;
+export function computeFrameInfo(agent, frame) {
+  let rowY;
   if (agent.facing === 'down') rowY = 0;
   else if (agent.facing === 'up') rowY = 1;
-  else if (agent.facing === 'right') rowY = 2;
-  else if (agent.facing === 'left') { rowY = 2; flipX = true; }
+  else rowY = 2; // left/right
+  const flipX = agent.facing === 'left';
 
-  let colX = 1;
-  let yOffset = 0;
-  if (agent.sitting) {
-    colX = 3;
-    yOffset = 16;
-  } else if (agent.walking) {
-    const w = Math.floor(frame / 6) % 4;
-    colX = w === 0 ? 0 : w === 1 ? 1 : w === 2 ? 0 : 2;
+  let colX;
+  if (agent.walking) {
+    // 走路: 每 6 帧切 1 帧 (≈ 100ms @ 60fps), 3 帧循环
+    colX = Math.floor(frame / 6) % 3;
+  } else if (agent.state === 'busy') {
+    // 工作站立: col 5-6, 每 24 帧切 1 帧 (≈ 400ms)
+    colX = 5 + (Math.floor(frame / 24) % 2);
+  } else {
+    // idle / offline / error 站立: col 3-4
+    colX = 3 + (Math.floor(frame / 24) % 2);
   }
 
-  return { sx: colX * FRAME_W, sy: rowY * FRAME_H, flipX, yOffset };
+  return { sx: colX * FRAME_W, sy: rowY * FRAME_H, flipX, yOffset: 0 };
 }
 
 /**
@@ -227,18 +235,17 @@ function computeFrameInfo(agent, frame) {
  * @param colorIdx 0~5, 选 char_N.png
  * @param facing 'down' | 'up' | 'left' | 'right'
  * @param walking 是否处于走路状态 (true 时播放走路动画)
- * @param sitting 是否处于坐下状态
+ * @param state 'idle' | 'busy' | 'offline' | 'error' — v2.13.3: 决定 standstill 帧
  * @param frame 全局帧数
- * @returns {{ sx: number, sy: number, flipX: boolean, yOffset: number } | null}
- *   返回此次绘制的 sheet 切片信息, 用于外部画 outline (复用同一帧). null 表示未绘制.
+ * @returns {{ sx, sy, flipX, yOffset } | null}
  */
-function drawCharacter(ctx, sheet, x, y, colorIdx, facing, walking, sitting, frame) {
+function drawCharacter(ctx, sheet, x, y, colorIdx, facing, walking, state, frame) {
   if (!sheet.loaded) return null;
 
   const charImg = sheet.chars[colorIdx % sheet.chars.length];
   if (!charImg.complete || charImg.naturalWidth === 0) return null;
 
-  const info = computeFrameInfo({ facing, walking, sitting }, frame);
+  const info = computeFrameInfo({ facing, walking, state }, frame);
   const { sx, sy, flipX, yOffset } = info;
 
   ctx.save();
@@ -517,6 +524,8 @@ export class PixelRenderer {
   setPathFinder(fns) {
     this._findPath = fns.findPath || null;
     this._getZoneCells = fns.getZoneCells || null;
+    // v2.13.3: 接受 stateToZone 注入 (统一状态→zone 映射, 替代 _tryWander hardcode)
+    this._stateToZone = fns.stateToZone || null;
   }
 
   /**
@@ -592,7 +601,9 @@ export class PixelRenderer {
         this._tryWander(a);
       }
 
-      // v2.4.0: 有 path 则走 path (逐 cell 插值); 无 path 退化为直线插值
+      // v2.4.0: 有 path 则走 path (逐 cell 插值); 无 path 则原地不动 (v2.13.3 修: 防止
+      // state 切换瞬间 path=null 直线穿墙. 之前 stepX = a.tx 会朝 BridgeAdapter
+      // 给的代表 cell 直线插值, 跨墙跨区).
       let stepX, stepY;
       if (a.path && a.pathIdx < a.path.length) {
         const [pc, pr] = a.path[a.pathIdx];
@@ -600,8 +611,14 @@ export class PixelRenderer {
         stepX = pc * gs + gs / 2;
         stepY = pr * gs + gs / 2;
       } else {
-        stepX = a.tx;
-        stepY = a.ty;
+        // no path → 原地, 等下次 wander 触发寻路
+        stepX = a.cx;
+        stepY = a.cy;
+        if (a.walking) {
+          a.walking = false;
+          a.tx = a.cx;
+          a.ty = a.cy;
+        }
       }
 
       const dx = stepX - a.cx;
@@ -672,7 +689,10 @@ export class PixelRenderer {
    */
   _tryWander(a) {
     if (!this._mapConfig || !this._findPath || !this._getZoneCells) return;
-    const zoneKey = a.state === 'busy' ? 'work' : 'idle';
+    // v2.13.3: 优先用注入的 stateToZone (统一映射), 否则回退到旧 hardcode
+    const zoneKey = this._stateToZone
+      ? this._stateToZone(a.state)
+      : (a.state === 'busy' ? 'work' : 'idle');
     const cells = this._getZoneCells(zoneKey, this._mapConfig);
     if (!cells || cells.length === 0) return;
     const gs = this._mapConfig.gridSize;
@@ -781,7 +801,7 @@ export class PixelRenderer {
         ctx.restore();
       }
 
-      drawCharacter(ctx, sheet, a.cx, a.cy, a.color, a.facing, a.walking, a.sitting, this.frame);
+      drawCharacter(ctx, sheet, a.cx, a.cy, a.color, a.facing, a.walking, a.state, this.frame);
 
       // name label
       this._drawLabel(a);

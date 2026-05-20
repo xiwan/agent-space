@@ -24,7 +24,7 @@ import { UsageView } from './UsageView.js';
 import {
   loadMapConfig, saveMapConfig, emptyMapConfig,
   loadMapConfigAsync, saveMapConfigAsync,
-  getTargetCell, cellToPx, pxToCell, getZoneCells,
+  getTargetCell, cellToPx, pxToCell, getZoneCells, stateToZone,
 } from './MapConfig.js';
 import { findPath } from './PathFinder.js';
 
@@ -184,7 +184,7 @@ async function main() {
   catch (e) { setStatus(`sprite load failed: ${e.message}`, 'error'); return; }
 
   // v2.6.0: inject pathfinder for wander
-  renderer.setPathFinder({ findPath, getZoneCells });
+  renderer.setPathFinder({ findPath, getZoneCells, stateToZone });
 
   // === 背景 select ===
   let storedBg = null;
