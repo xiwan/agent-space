@@ -145,10 +145,11 @@ export function extractDisplayText(remote, kind, fallbackAgent = null) {
 }
 
 /**
- * 从一个对象里抽 text. 字段优先级:
- *   1. obj.output[*].parts[*].content (ACP) — array of content joined
+ * 从一个对象里抽 text. 字段优先级 (按真实 ACP Bridge 响应形态调整):
+ *   0. obj.result (string) — ACP Bridge job/run 端点最常见形态
+ *   1. obj.output[*].parts[*].content (ACP standard)
  *   2. obj.content (conversation turn)
- *   3. obj.result.text
+ *   3. obj.result.text (result 是对象时)
  *   4. obj.result.output (string only)
  *   5. obj.text
  *   6. obj.output (string only — 不是 array)
@@ -156,6 +157,8 @@ export function extractDisplayText(remote, kind, fallbackAgent = null) {
  */
 function pickSingleText(obj) {
   if (!obj || typeof obj !== 'object') return null;
+  // 0. result 是字符串 (v2.11.1: ACP Bridge /jobs/{id} 真实形态)
+  if (typeof obj.result === 'string' && obj.result.trim()) return obj.result;
   // 1. ACP output[*].parts[*].content
   if (Array.isArray(obj.output)) {
     const parts = [];
@@ -170,10 +173,10 @@ function pickSingleText(obj) {
   }
   // 2. conversation turn content
   if (typeof obj.content === 'string' && obj.content.trim()) return obj.content;
-  // 3. result.text
-  if (obj.result && typeof obj.result.text === 'string' && obj.result.text.trim()) return obj.result.text;
+  // 3. result.text (result 是对象)
+  if (obj.result && typeof obj.result === 'object' && typeof obj.result.text === 'string' && obj.result.text.trim()) return obj.result.text;
   // 4. result.output (string)
-  if (obj.result && typeof obj.result.output === 'string' && obj.result.output.trim()) return obj.result.output;
+  if (obj.result && typeof obj.result === 'object' && typeof obj.result.output === 'string' && obj.result.output.trim()) return obj.result.output;
   // 5. text
   if (typeof obj.text === 'string' && obj.text.trim()) return obj.text;
   // 6. output (string only)
@@ -326,6 +329,19 @@ export class CommandHistory {
     const remoteIdLine = r.remoteId ? `<div class="ch-meta">id: ${escapeHtml(r.remoteId)}</div>` : '';
     const errorLine = r.error ? `<div class="ch-error">${escapeHtml(r.error)}</div>` : '';
 
+    // v2.11.1: 从 server 响应里抽 metadata
+    const out = (r.output && typeof r.output === 'object') ? r.output : null;
+    // duration
+    let durationLine = '';
+    if (out && typeof out.duration === 'number' && Number.isFinite(out.duration)) {
+      durationLine = `<span class="ch-duration">${out.duration.toFixed(1)}s</span>`;
+    }
+    // server-side error (与 r.error 区分: r.error 是网络/客户端错, server.error 是业务错)
+    let serverErrorLine = '';
+    if (out && typeof out.error === 'string' && out.error.trim()) {
+      serverErrorLine = `<div class="ch-error ch-error-server">${escapeHtml(out.error)}</div>`;
+    }
+
     // === Prompt block (折叠, 最近 1 条默认展开) ===
     const fullPrompt = r.prompt || '';
     const promptLen = fullPrompt.length;
@@ -339,14 +355,13 @@ export class CommandHistory {
     ` : '';
 
     // === Conversation block (extractDisplayText, 默认展开) ===
-    const fallbackAgent = r.agents[0] || null;
+    // v2.11.1: 优先用 server 返回的 agent 字段, 否则退到 ctx.agents[0]
+    const fallbackAgent = (out && typeof out.agent === 'string' && out.agent) || r.agents[0] || null;
     const display = extractDisplayText(r.output, r.kind, fallbackAgent);
     let conversationBlock = '';
     if (display.hasContent) {
       const turnsHtml = display.turns.map(t => {
         const agentName = t.agent || '(unknown)';
-        // 颜色: 由于 history 不直接知道 agent state, 用 default; 实际颜色由 CSS
-        // 通过 .ch-turn 默认色条体现 (chip 区有色, 这里用统一灰色避免误导)
         return `
           <div class="ch-turn">
             <div class="ch-turn-head">${escapeHtml(agentName)}</div>
@@ -361,7 +376,6 @@ export class CommandHistory {
         </details>
       `;
     } else if (r.status === 'succeeded' || r.status === 'failed') {
-      // 终态但抽不出可读文本 → 提示用户从 raw json 看
       conversationBlock = `<div class="ch-meta ch-no-content">no readable output — see raw JSON below</div>`;
     }
 
@@ -377,12 +391,14 @@ export class CommandHistory {
         <div class="ch-head">
           <span class="ch-mode">${escapeHtml(r.mode)}</span>
           <span class="ch-status">${escapeHtml(r.status)}</span>
+          ${durationLine}
           <span class="ch-time">${ts}</span>
         </div>
         <div class="ch-agents">${escapeHtml(agentsStr)}</div>
         ${promptBlock}
         ${conversationBlock}
         ${remoteIdLine}
+        ${serverErrorLine}
         ${errorLine}
         ${rawBlock}
       </div>

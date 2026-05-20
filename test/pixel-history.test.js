@@ -406,3 +406,151 @@ describe('CommandHistory v2.11.0 card structure', () => {
     expect(turnText.innerHTML).not.toContain('<script>');
   });
 });
+
+// ============================================================
+// v2.11.1: real-world ACP Bridge job response shape
+// ============================================================
+describe('v2.11.1 ACP Bridge job real-world response', () => {
+  let container;
+  let history;
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    history = new CommandHistory(container, { client: mkClient() });
+  });
+
+  // 用户实测真实响应 (POST /api/jobs → GET /api/jobs/{id} 完成态)
+  const realJobResponse = {
+    job_id: 'a798f1ab-c916-4ac1-b667-95aebb153b2b',
+    agent: 'codex',
+    session_id: '92a74ce3-e8d5-50a0-9456-ec47b158e6fb',
+    status: 'completed',
+    created_at: 1779281946.068247,
+    target: 'channel:1469723146134356173',
+    account_id: 'default',
+    result: ' 已为您输出李白的《静夜思》，这首唐诗脍炙人口，表达了游子在静夜中对故乡的深深思念。\n',
+    error: '',
+    tools: [],
+    duration: 6.8,
+  };
+
+  it('extractDisplayText: priority 0 takes string result', () => {
+    const d = extractDisplayText(realJobResponse, 'job', 'codex');
+    expect(d.hasContent).toBe(true);
+    expect(d.turns.length).toBe(1);
+    expect(d.turns[0].agent).toBe('codex');
+    expect(d.turns[0].text).toContain('李白');
+    expect(d.turns[0].text).toContain('静夜思');
+  });
+
+  it('extractDisplayText: result object with .text still works (backward compat)', () => {
+    const d = extractDisplayText({ result: { text: 'old shape' } }, 'job', 'a');
+    expect(d.hasContent).toBe(true);
+    expect(d.turns[0].text).toBe('old shape');
+  });
+
+  it('extractDisplayText: empty string result falls through to other fields', () => {
+    const d = extractDisplayText({ result: '   ', output: 'fallback' }, 'job', 'a');
+    expect(d.hasContent).toBe(true);
+    expect(d.turns[0].text).toBe('fallback');
+  });
+
+  it('card renders conversation block from real job response (李白)', () => {
+    history.pushSubmission(
+      { kind: 'job', mode: 'single', agents: ['codex'], prompt: '输出李白的静夜思' },
+      { job_id: realJobResponse.job_id }
+    );
+    // 模拟 poll 完成
+    const rec = history.list()[0];
+    rec.status = 'succeeded';
+    rec.output = realJobResponse;
+    history._render();
+    const turn = container.querySelector('.ch-turn');
+    expect(turn).not.toBeNull();
+    expect(turn.querySelector('.ch-turn-head').textContent).toBe('codex');
+    expect(turn.querySelector('.ch-turn-text').textContent).toContain('李白');
+  });
+
+  it('card shows duration in head when output.duration is number', () => {
+    history.pushSubmission(
+      { kind: 'job', mode: 'single', agents: ['codex'], prompt: 'x' },
+      { job_id: 'j' }
+    );
+    const rec = history.list()[0];
+    rec.status = 'succeeded';
+    rec.output = realJobResponse;
+    history._render();
+    const dur = container.querySelector('.ch-duration');
+    expect(dur).not.toBeNull();
+    expect(dur.textContent).toBe('6.8s');
+  });
+
+  it('card omits duration when output.duration missing', () => {
+    history.pushSubmission(
+      { kind: 'job', mode: 'single', agents: ['a'], prompt: 'x' },
+      { job_id: 'j' }
+    );
+    const rec = history.list()[0];
+    rec.status = 'succeeded';
+    rec.output = { result: 'ok' };  // 无 duration
+    history._render();
+    expect(container.querySelector('.ch-duration')).toBeNull();
+  });
+
+  it('card omits duration when output.error empty string', () => {
+    // 复用 realJobResponse, error 是空字符串 → 不渲染 .ch-error-server
+    history.pushSubmission(
+      { kind: 'job', mode: 'single', agents: ['codex'], prompt: 'x' },
+      { job_id: 'j' }
+    );
+    const rec = history.list()[0];
+    rec.status = 'succeeded';
+    rec.output = realJobResponse;  // error: ''
+    history._render();
+    expect(container.querySelector('.ch-error-server')).toBeNull();
+  });
+
+  it('card shows server-side error when output.error is non-empty', () => {
+    history.pushSubmission(
+      { kind: 'job', mode: 'single', agents: ['a'], prompt: 'x' },
+      { job_id: 'j' }
+    );
+    const rec = history.list()[0];
+    rec.status = 'failed';
+    rec.output = { error: 'Tool execution failed: timeout', duration: 5.2 };
+    history._render();
+    const errEl = container.querySelector('.ch-error-server');
+    expect(errEl).not.toBeNull();
+    expect(errEl.textContent).toMatch(/Tool execution failed: timeout/);
+  });
+
+  it('agent override: output.agent takes precedence over r.agents[0]', () => {
+    // 提交时记 agent="codex" (用户选), server 返回 agent="qwen" (实际派发到的)
+    history.pushSubmission(
+      { kind: 'job', mode: 'single', agents: ['codex'], prompt: 'x' },
+      { job_id: 'j' }
+    );
+    const rec = history.list()[0];
+    rec.status = 'succeeded';
+    rec.output = { agent: 'qwen', result: 'rerouted reply' };
+    history._render();
+    // turn head 应显示 server 报的 'qwen', 不是 ctx 的 'codex'
+    expect(container.querySelector('.ch-turn-head').textContent).toBe('qwen');
+  });
+
+  it('XSS defense: server result with HTML content is escaped', () => {
+    history.pushSubmission(
+      { kind: 'job', mode: 'single', agents: ['a'], prompt: 'x' },
+      { job_id: 'j' }
+    );
+    const rec = history.list()[0];
+    rec.status = 'succeeded';
+    rec.output = { result: '<img src=x onerror=alert(1)>', duration: 1.0 };
+    history._render();
+    const turn = container.querySelector('.ch-turn-text');
+    expect(turn.textContent).toBe('<img src=x onerror=alert(1)>');
+    expect(turn.innerHTML).toContain('&lt;img');
+    expect(turn.querySelector('img')).toBeNull();
+  });
+});
