@@ -34,6 +34,8 @@ export class Sidebar {
     this.container = container;
     this.onToggle = opts.onToggle || (() => {});
     this.onTabChange = opts.onTabChange || (() => {});
+    // v2.13.0: clear history 回调 (Sidebar 不持有 history 状态, 仅触发外部清除)
+    this.onClearHistory = opts.onClearHistory || null;
     this.agents = [];
     this.selectedName = null;
 
@@ -96,14 +98,42 @@ export class Sidebar {
         <button class="sidebar-tab" data-tab="usage">Usage</button>
       </div>
       <div class="sidebar-agents"></div>
-      <div class="sidebar-history"></div>
+      <div class="sidebar-history-wrap">
+        <div class="sidebar-history-toolbar">
+          <span class="sidebar-history-count" data-history-count>0 records</span>
+          <button class="sidebar-history-clear" type="button" title="Clear history">🗑 Clear</button>
+        </div>
+        <div class="sidebar-history"></div>
+      </div>
       <div class="sidebar-usage"></div>
     `;
     this.container.querySelectorAll('.sidebar-tab').forEach(btn => {
       btn.addEventListener('click', () => this._setTab(btn.dataset.tab));
     });
+    // v2.13.0: clear 按钮
+    const clearBtn = this.container.querySelector('.sidebar-history-clear');
+    if (clearBtn) clearBtn.addEventListener('click', () => this._handleClearHistory());
     this._applyTabVisibility();
     this._renderAgents();
+  }
+
+  /**
+   * v2.13.0: clear button click. confirm 后调外部 onClearHistory 回调.
+   */
+  _handleClearHistory() {
+    const ok = (typeof window !== 'undefined' && typeof window.confirm === 'function')
+      ? window.confirm('Clear all command history? This cannot be undone.')
+      : true;
+    if (!ok) return;
+    if (this.onClearHistory) this.onClearHistory();
+  }
+
+  /**
+   * v2.13.0: 由外部 (CommandHistory) 在 record 数量变化时调, 更新 UI 计数.
+   */
+  setHistoryCount(n) {
+    const el = this.container.querySelector('[data-history-count]');
+    if (el) el.textContent = `${n} record${n === 1 ? '' : 's'}`;
   }
 
   _applyTabVisibility() {
@@ -113,7 +143,7 @@ export class Sidebar {
       else t.classList.remove('active');
     });
     const a = this.container.querySelector('.sidebar-agents');
-    const h = this.container.querySelector('.sidebar-history');
+    const h = this.container.querySelector('.sidebar-history-wrap');
     const u = this.container.querySelector('.sidebar-usage');
     if (a) a.style.display = this._tab === 'agents' ? '' : 'none';
     if (h) h.style.display = this._tab === 'history' ? '' : 'none';

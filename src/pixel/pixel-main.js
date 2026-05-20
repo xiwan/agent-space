@@ -100,6 +100,10 @@ async function main() {
 
   const sidebar = new Sidebar(sidebarEl, {
     onToggle: (name) => toggleSelected(name),
+    // v2.13.0: clear 按钮触发 history.clear()
+    onClearHistory: () => {
+      if (history) history.clear();
+    },
   });
 
   // === v2.10.0: Command Composer + Client + History ===
@@ -110,6 +114,8 @@ async function main() {
     onAgentOutput: (name, text) => {
       if (name && text) renderer.enqueueBubble(name, text);
     },
+    // v2.13.0: count 变化 → sidebar 工具行更新
+    onCountChange: (n) => sidebar.setHistoryCount(n),
   }) : null;
 
   const composer = composerEl ? new CommandComposer(composerEl, {

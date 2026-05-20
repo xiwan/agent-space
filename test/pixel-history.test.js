@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { CommandHistory, normalizeStatus, extractAgentBubbles, extractDisplayText } from '../src/pixel/CommandHistory.js';
+import { CommandHistory, normalizeStatus, extractAgentBubbles, extractDisplayText, truncateRecordForStorage, loadRecordsFromStorage, saveRecordsToStorage, clearStorage } from '../src/pixel/CommandHistory.js';
 
 function mkClient(over = {}) {
   return {
@@ -58,6 +58,8 @@ describe('CommandHistory (DOM + state)', () => {
   let container, client, onAgentOutput, history;
 
   beforeEach(() => {
+    // v2.13.0: 隔离 localStorage 避免测试间污染
+    if (typeof localStorage !== 'undefined') localStorage.clear();
     container = document.createElement('div');
     document.body.appendChild(container);
     client = mkClient();
@@ -294,7 +296,8 @@ describe('CommandHistory v2.11.0 card structure', () => {
   let history;
 
   beforeEach(() => {
-    container = document.createElement('div');
+    if (typeof localStorage !== "undefined") localStorage.clear();
+    container = document.createElement("div");
     document.body.appendChild(container);
     history = new CommandHistory(container, { client: mkClient() });
   });
@@ -415,7 +418,8 @@ describe('v2.11.1 ACP Bridge job real-world response', () => {
   let history;
 
   beforeEach(() => {
-    container = document.createElement('div');
+    if (typeof localStorage !== "undefined") localStorage.clear();
+    container = document.createElement("div");
     document.body.appendChild(container);
     history = new CommandHistory(container, { client: mkClient() });
   });
@@ -552,5 +556,265 @@ describe('v2.11.1 ACP Bridge job real-world response', () => {
     expect(turn.textContent).toBe('<img src=x onerror=alert(1)>');
     expect(turn.innerHTML).toContain('&lt;img');
     expect(turn.querySelector('img')).toBeNull();
+  });
+});
+
+// ============================================================
+// v2.13.0: localStorage persistence
+// ============================================================
+describe('v2.13.0 persistence — pure helpers', () => {
+  it('truncateRecordForStorage: small output unchanged', () => {
+    const rec = { id: 'r1', output: { result: 'short' } };
+    const out = truncateRecordForStorage(rec);
+    expect(out).toBe(rec); // 引用相等 (no copy)
+  });
+
+  it('truncateRecordForStorage: large output replaced with placeholder', () => {
+    const big = 'x'.repeat(20 * 1024);
+    const rec = { id: 'r1', output: { result: big } };
+    const out = truncateRecordForStorage(rec);
+    expect(out._truncated).toBe(true);
+    expect(out.output._truncated).toBe(true);
+    expect(out.output._original_size).toBeGreaterThan(20000);
+    expect(out.output._max_bytes).toBe(10240);
+    expect(out.output._preview).toMatch(/truncated for storage/);
+  });
+
+  it('truncateRecordForStorage: respects custom maxBytes', () => {
+    const rec = { id: 'r1', output: { result: 'x'.repeat(100) } };
+    const out = truncateRecordForStorage(rec, 30);
+    expect(out._truncated).toBe(true);
+  });
+
+  it('truncateRecordForStorage: null output unchanged', () => {
+    const rec = { id: 'r1', output: null };
+    expect(truncateRecordForStorage(rec)).toBe(rec);
+  });
+
+  // mock storage to test save/load without happy-dom
+  const mkMockStorage = () => {
+    let store = {};
+    return {
+      getItem(k) { return store[k] ?? null; },
+      setItem(k, v) { store[k] = String(v); },
+      removeItem(k) { delete store[k]; },
+      _store: store,
+      _read() { return store; },
+    };
+  };
+
+  it('saveRecordsToStorage + loadRecordsFromStorage: round-trip', () => {
+    const ms = mkMockStorage();
+    const records = [
+      { id: 'r1', kind: 'run', mode: 'single', agents: ['a'], status: 'succeeded',
+        prompt: 'p', submittedAt: 1000, completedAt: 1100, output: { result: 'ok' }, error: null },
+    ];
+    expect(saveRecordsToStorage(records, ms)).toBe(true);
+    const loaded = loadRecordsFromStorage(ms);
+    expect(loaded.length).toBe(1);
+    expect(loaded[0].id).toBe('r1');
+    expect(loaded[0].output.result).toBe('ok');
+  });
+
+  it('loadRecordsFromStorage: returns [] for missing key', () => {
+    const ms = mkMockStorage();
+    expect(loadRecordsFromStorage(ms)).toEqual([]);
+  });
+
+  it('loadRecordsFromStorage: returns [] for malformed JSON', () => {
+    const ms = mkMockStorage();
+    ms.setItem('pixel.commandHistory.v1', '{not json');
+    expect(loadRecordsFromStorage(ms)).toEqual([]);
+  });
+
+  it('loadRecordsFromStorage: returns [] for wrong version', () => {
+    const ms = mkMockStorage();
+    ms.setItem('pixel.commandHistory.v1', JSON.stringify({ version: 999, records: [] }));
+    expect(loadRecordsFromStorage(ms)).toEqual([]);
+  });
+
+  it('loadRecordsFromStorage: filters out malformed records', () => {
+    const ms = mkMockStorage();
+    ms.setItem('pixel.commandHistory.v1', JSON.stringify({
+      version: 1, savedAt: 0, records: [
+        { /* missing fields */ },
+        { id: 'r1', kind: 'run', mode: 'single', agents: ['a'], status: 'ok', submittedAt: 1 },
+      ],
+    }));
+    expect(loadRecordsFromStorage(ms).length).toBe(1);
+  });
+
+  it('saveRecordsToStorage: handles quota error gracefully', () => {
+    const ms = mkMockStorage();
+    ms.setItem = () => { throw new Error('QuotaExceededError'); };
+    const oldWarn = console.warn;
+    const calls = [];
+    console.warn = (...a) => calls.push(a);
+    try {
+      const ok = saveRecordsToStorage([{ id: 'r1', kind: 'run', mode: 'single', agents: ['a'], status: 'ok', submittedAt: 1 }], ms);
+      expect(ok).toBe(false);
+      expect(calls.length).toBeGreaterThan(0);
+    } finally {
+      console.warn = oldWarn;
+    }
+  });
+
+  it('saveRecordsToStorage: caps at 50 records', () => {
+    const ms = mkMockStorage();
+    const records = Array.from({ length: 100 }, (_, i) => ({
+      id: `r${i}`, kind: 'run', mode: 'single', agents: ['a'], status: 'ok',
+      prompt: `p${i}`, submittedAt: i, output: { result: 'x' }, error: null,
+    }));
+    saveRecordsToStorage(records, ms);
+    const loaded = loadRecordsFromStorage(ms);
+    expect(loaded.length).toBe(50);
+    // 应保留前 50 (caller 已经按"最新在前"传, save 截前 50)
+    expect(loaded[0].id).toBe('r0');
+    expect(loaded[49].id).toBe('r49');
+  });
+
+  it('clearStorage removes the key', () => {
+    const ms = mkMockStorage();
+    ms.setItem('pixel.commandHistory.v1', '{"version":1,"records":[]}');
+    clearStorage(ms);
+    expect(ms.getItem('pixel.commandHistory.v1')).toBeNull();
+  });
+});
+
+// ============================================================
+// v2.13.0: persistence — class behavior
+// ============================================================
+describe('v2.13.0 CommandHistory class with storage', () => {
+  let container;
+  beforeEach(() => {
+    if (typeof localStorage !== 'undefined') localStorage.clear();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+
+  it('pushSubmission writes to localStorage', () => {
+    const h = new CommandHistory(container, { client: mkClient() });
+    h.pushSubmission(
+      { kind: 'run', mode: 'single', agents: ['a'], prompt: 'hi' },
+      { output: 'ok' }
+    );
+    const raw = localStorage.getItem('pixel.commandHistory.v1');
+    expect(raw).not.toBeNull();
+    const parsed = JSON.parse(raw);
+    expect(parsed.version).toBe(1);
+    expect(parsed.records.length).toBe(1);
+    expect(parsed.records[0].prompt).toBe('hi');
+  });
+
+  it('constructor restores from localStorage', () => {
+    // 先用一个 history 推一条
+    const h1 = new CommandHistory(container, { client: mkClient() });
+    h1.pushSubmission({ kind: 'run', mode: 'single', agents: ['a'], prompt: 'first' }, { output: 'ok' });
+    // 模拟刷新: 新建另一 history
+    const c2 = document.createElement('div');
+    document.body.appendChild(c2);
+    const h2 = new CommandHistory(c2, { client: mkClient() });
+    expect(h2.list().length).toBe(1);
+    expect(h2.list()[0].prompt).toBe('first');
+    // DOM 也渲染了
+    expect(c2.querySelector('.ch-card')).not.toBeNull();
+  });
+
+  it('clear() empties memory + localStorage', () => {
+    const h = new CommandHistory(container, { client: mkClient() });
+    h.pushSubmission({ kind: 'run', mode: 'single', agents: ['a'], prompt: 'p' }, { output: 'ok' });
+    expect(localStorage.getItem('pixel.commandHistory.v1')).not.toBeNull();
+    h.clear();
+    expect(h.list().length).toBe(0);
+    expect(localStorage.getItem('pixel.commandHistory.v1')).toBeNull();
+    expect(container.querySelector('.ch-empty')).not.toBeNull();
+  });
+
+  it('FIFO: 51st record evicts the oldest', () => {
+    const h = new CommandHistory(container, { client: mkClient() });
+    for (let i = 0; i < 52; i++) {
+      h.pushSubmission(
+        { kind: 'run', mode: 'single', agents: ['a'], prompt: `p${i}` },
+        { output: 'ok' }
+      );
+    }
+    expect(h.list().length).toBe(50);
+    // 最新的 (idx=0) 是 p51, 最老的应是 p2 (p0/p1 被砍)
+    expect(h.list()[0].prompt).toBe('p51');
+    expect(h.list()[49].prompt).toBe('p2');
+  });
+
+  it('large output truncated when persisted', () => {
+    const h = new CommandHistory(container, { client: mkClient() });
+    const big = 'y'.repeat(50 * 1024);
+    h.pushSubmission(
+      { kind: 'run', mode: 'single', agents: ['a'], prompt: 'p' },
+      { result: big, extra: 'meta' }
+    );
+    const persisted = JSON.parse(localStorage.getItem('pixel.commandHistory.v1'));
+    expect(persisted.records[0]._truncated).toBe(true);
+    expect(persisted.records[0].output._truncated).toBe(true);
+    // 内存里的 record 不被截 (内存版本仍是完整的)
+    expect(typeof h.list()[0].output).toBe('object');
+  });
+
+  it('onCountChange fires on push and clear', () => {
+    const onCountChange = vi.fn();
+    const h = new CommandHistory(container, { client: mkClient(), onCountChange });
+    // 初始 0
+    expect(onCountChange).toHaveBeenCalledWith(0);
+    onCountChange.mockClear();
+    h.pushSubmission({ kind: 'run', mode: 'single', agents: ['a'], prompt: 'p' }, { output: 'ok' });
+    expect(onCountChange).toHaveBeenCalledWith(1);
+    onCountChange.mockClear();
+    h.clear();
+    expect(onCountChange).toHaveBeenCalledWith(0);
+  });
+
+  it('persisted pending record is loaded and continues polling on next tick', async () => {
+    // seed storage with a pending pipeline record
+    const seed = {
+      version: 1, savedAt: 0,
+      records: [{
+        id: 'r-pending', kind: 'pipeline', mode: 'sequence', agents: ['a', 'b'],
+        prompt: 'p', submittedAt: 1000, completedAt: null, status: 'pending',
+        remoteId: 'pipe-xyz', output: null, error: null,
+      }],
+    };
+    localStorage.setItem('pixel.commandHistory.v1', JSON.stringify(seed));
+    // 构造时加载
+    const pollPipeline = vi.fn().mockResolvedValue({ status: 'succeeded', steps: [{ agent: 'a', output: 'ok' }] });
+    const client = { pollJob: vi.fn(), pollPipeline };
+    const h = new CommandHistory(container, { client });
+    expect(h.list().length).toBe(1);
+    expect(h.list()[0].status).toBe('pending');
+    // tick → 应该调 pollPipeline
+    await h.tickOnce();
+    expect(pollPipeline).toHaveBeenCalledWith('pipe-xyz');
+    expect(h.list()[0].status).toBe('succeeded');
+  });
+
+  it('storage:null disables persistence', () => {
+    const h = new CommandHistory(container, { client: mkClient(), storage: null });
+    h.pushSubmission({ kind: 'run', mode: 'single', agents: ['a'], prompt: 'p' }, { output: 'ok' });
+    // happy-dom 真 localStorage 不应被写
+    expect(localStorage.getItem('pixel.commandHistory.v1')).toBeNull();
+  });
+
+  it('truncated note rendered in card when _truncated=true', () => {
+    const h = new CommandHistory(container, { client: mkClient() });
+    const big = 'z'.repeat(50 * 1024);
+    h.pushSubmission(
+      { kind: 'run', mode: 'single', agents: ['a'], prompt: 'p' },
+      { result: big }
+    );
+    // mutate 直接 set _truncated 模拟从 storage 加载后的状态
+    const rec = h.list()[0];
+    rec._truncated = true;
+    rec.output = { _truncated: true, _original_size: 51200, _max_bytes: 10240, _preview: 'xx' };
+    h._render();
+    const note = container.querySelector('.ch-truncated-note');
+    expect(note).not.toBeNull();
+    expect(note.textContent).toMatch(/truncated for storage/i);
   });
 });

@@ -30,6 +30,12 @@
 const POLL_INTERVAL_MS = 5000;
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'completed', 'failure', 'success', 'error']);
 
+// v2.13.0: 持久化常量
+const STORAGE_KEY = 'pixel.commandHistory.v1';
+const STORAGE_VERSION = 1;
+const MAX_RECORDS = 50;            // FIFO
+const MAX_OUTPUT_BYTES = 10 * 1024; // 单条 output 序列化超此 → 截断
+
 let _idCounter = 0;
 function genId() {
   _idCounter += 1;
@@ -190,6 +196,80 @@ function truncate(s, max) {
   return str.slice(0, max) + ' … (truncated)';
 }
 
+/**
+ * v2.13.0: 把 record 序列化前做大小检查, 超 MAX_OUTPUT_BYTES 截断 output 字段.
+ * 返回新 record 副本 (不 mutate 原对象), 加 `_truncated: true` 标记.
+ * 若 output 是字符串则截字串, 否则保留 JSON 但 stringify 截断后 reparse 失败时退回字符串.
+ */
+export function truncateRecordForStorage(rec, maxBytes = MAX_OUTPUT_BYTES) {
+  if (!rec || rec.output == null) return rec;
+  const json = JSON.stringify(rec.output);
+  if (!json || json.length <= maxBytes) return rec;
+  // 整个 output 退化为占位 + 部分原始 JSON 字符串 (供 raw 块仍能展示部分)
+  const head = json.slice(0, maxBytes);
+  return {
+    ...rec,
+    output: {
+      _truncated: true,
+      _original_size: json.length,
+      _max_bytes: maxBytes,
+      _preview: head + ' … (truncated for storage)',
+    },
+    _truncated: true,
+  };
+}
+
+/**
+ * v2.13.0: 从 localStorage 加载 records. 解析失败 / schema 不符 → 返回 [].
+ * 不抛异常.
+ */
+export function loadRecordsFromStorage(storage = (typeof localStorage !== 'undefined' ? localStorage : null)) {
+  if (!storage) return [];
+  let raw;
+  try { raw = storage.getItem(STORAGE_KEY); } catch { return []; }
+  if (!raw) return [];
+  let data;
+  try { data = JSON.parse(raw); } catch { return []; }
+  if (!data || typeof data !== 'object') return [];
+  if (data.version !== STORAGE_VERSION) return [];
+  if (!Array.isArray(data.records)) return [];
+  // 防御性过滤: 过掉缺字段的 record
+  return data.records.filter(r =>
+    r && typeof r === 'object' && r.id && r.kind && r.status &&
+    Array.isArray(r.agents) && typeof r.submittedAt === 'number'
+  );
+}
+
+/**
+ * v2.13.0: 写 records 到 localStorage. 失败 (quota / disabled / 等) 记 warn 不抛.
+ * 写入前对每条 record 调用 truncateRecordForStorage.
+ */
+export function saveRecordsToStorage(records, storage = (typeof localStorage !== 'undefined' ? localStorage : null)) {
+  if (!storage) return false;
+  if (!Array.isArray(records)) return false;
+  const safe = records.slice(0, MAX_RECORDS).map(r => truncateRecordForStorage(r));
+  const payload = JSON.stringify({
+    version: STORAGE_VERSION,
+    savedAt: Date.now() / 1000,
+    records: safe,
+  });
+  try {
+    storage.setItem(STORAGE_KEY, payload);
+    return true;
+  } catch (e) {
+    // quota exceeded / private mode / 等 — 不抛, 静默降级
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn('[CommandHistory] localStorage save failed:', e.message || e);
+    }
+    return false;
+  }
+}
+
+export function clearStorage(storage = (typeof localStorage !== 'undefined' ? localStorage : null)) {
+  if (!storage) return;
+  try { storage.removeItem(STORAGE_KEY); } catch {}
+}
+
 export class CommandHistory {
   /**
    * @param {HTMLElement} container — 列表的根 DOM (innerHTML 会被重写)
@@ -204,10 +284,22 @@ export class CommandHistory {
     this.container = container;
     this.client = opts.client;
     this.onAgentOutput = opts.onAgentOutput || (() => {});
+    // v2.13.0: 通知外部 (Sidebar) 更新 record count UI
+    this.onCountChange = opts.onCountChange || (() => {});
     this.pollIntervalMs = opts.pollIntervalMs ?? POLL_INTERVAL_MS;
+    // v2.13.0: 持久化注入点 (测试可换成 mock storage)
+    this._storage = (opts.storage !== undefined) ? opts.storage
+                  : (typeof localStorage !== 'undefined' ? localStorage : null);
     this._records = []; // 最新在前
     this._timer = null;
     this._seenOutputs = new Set(); // dedup: `${recId}:${stepIdx}`
+
+    // v2.13.0: 启动时尝试从 storage 加载
+    const persisted = loadRecordsFromStorage(this._storage);
+    if (persisted.length > 0) {
+      this._records = persisted;
+    }
+
     this._render();
   }
 
@@ -243,6 +335,21 @@ export class CommandHistory {
       }
     }
     this._records.unshift(rec);
+    // v2.13.0: cap 最多 50 条 + 持久化
+    if (this._records.length > MAX_RECORDS) {
+      this._records.length = MAX_RECORDS;
+    }
+    this._persist();
+    this._render();
+  }
+
+  /**
+   * v2.13.0: 清空内存 + 清 localStorage. UI 上由"Clear"按钮触发 (调用方负责确认).
+   */
+  clear() {
+    this._records = [];
+    this._seenOutputs.clear();
+    clearStorage(this._storage);
     this._render();
   }
 
@@ -308,18 +415,31 @@ export class CommandHistory {
         mutated = true;
       }
     }
-    if (mutated) this._render();
+    if (mutated) {
+      // v2.13.0: 状态变化 → 持久化
+      this._persist();
+      this._render();
+    }
+  }
+
+  /**
+   * v2.13.0: 内部统一的持久化入口. 失败静默 (saveRecordsToStorage 处理).
+   */
+  _persist() {
+    saveRecordsToStorage(this._records, this._storage);
   }
 
   _render() {
     if (this._records.length === 0) {
       this.container.innerHTML = '<div class="ch-empty">no commands submitted yet</div>';
+      this.onCountChange(0);
       return;
     }
     // v2.11.0: 最近 1 条 isRecent=true (默认展开 prompt 块)
     this.container.innerHTML = this._records
       .map((r, idx) => this._buildCard(r, idx === 0))
       .join('');
+    this.onCountChange(this._records.length);
   }
 
   _buildCard(r, isRecent = false) {
@@ -383,7 +503,11 @@ export class CommandHistory {
     let rawBlock = '';
     if (r.output) {
       const json = JSON.stringify(r.output, null, 2);
-      rawBlock = `<details class="ch-raw-block"><summary>▸ Raw JSON (${json.length} bytes)</summary><pre>${escapeHtml(json.slice(0, 4000))}</pre></details>`;
+      // v2.13.0: 截断标记
+      const truncatedNote = r._truncated
+        ? `<div class="ch-meta ch-truncated-note">⚠ output truncated for storage (was ${(r.output._original_size ?? json.length).toLocaleString()} bytes)</div>`
+        : '';
+      rawBlock = `${truncatedNote}<details class="ch-raw-block"><summary>▸ Raw JSON (${json.length} bytes)</summary><pre>${escapeHtml(json.slice(0, 4000))}</pre></details>`;
     }
 
     return `

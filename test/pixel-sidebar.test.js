@@ -164,7 +164,8 @@ describe('Sidebar (v2.2.0)', () => {
   it('v2.10.0: default tab is agents, agents pane visible, history hidden', () => {
     expect(sidebar.getTab()).toBe('agents');
     const a = container.querySelector('.sidebar-agents');
-    const h = container.querySelector('.sidebar-history');
+    // v2.13.0: history 容器外层改名为 .sidebar-history-wrap (含 toolbar)
+    const h = container.querySelector('.sidebar-history-wrap');
     expect(a.style.display).not.toBe('none');
     expect(h.style.display).toBe('none');
   });
@@ -174,7 +175,8 @@ describe('Sidebar (v2.2.0)', () => {
     histTab.click();
     expect(sidebar.getTab()).toBe('history');
     expect(container.querySelector('.sidebar-agents').style.display).toBe('none');
-    expect(container.querySelector('.sidebar-history').style.display).not.toBe('none');
+    // v2.13.0: history 实际容器外加了 .sidebar-history-wrap
+    expect(container.querySelector('.sidebar-history-wrap').style.display).not.toBe('none');
     expect(histTab.classList.contains('active')).toBe(true);
   });
 
@@ -209,7 +211,8 @@ describe('Sidebar (v2.2.0)', () => {
     c2.querySelector('[data-tab="usage"]').click();
     expect(c2.querySelector('.sidebar-usage').style.display).toBe('');
     expect(c2.querySelector('.sidebar-agents').style.display).toBe('none');
-    expect(c2.querySelector('.sidebar-history').style.display).toBe('none');
+    // v2.13.0: history wrap 是被切的容器
+    expect(c2.querySelector('.sidebar-history-wrap').style.display).toBe('none');
     expect(sb.getTab()).toBe('usage');
   });
 
@@ -237,5 +240,54 @@ describe('Sidebar (v2.2.0)', () => {
     document.body.appendChild(c2);
     const sb = new Sidebar(c2);
     expect(sb.getTab()).toBe('agents');
+  });
+
+  // ============================================================
+  // v2.13.0: history toolbar (count + Clear button)
+  // ============================================================
+  it('v2.13.0: history wrap contains toolbar with count + clear button', () => {
+    expect(container.querySelector('.sidebar-history-toolbar')).not.toBeNull();
+    expect(container.querySelector('.sidebar-history-count')).not.toBeNull();
+    expect(container.querySelector('.sidebar-history-clear')).not.toBeNull();
+  });
+
+  it('v2.13.0: setHistoryCount updates count UI', () => {
+    sidebar.setHistoryCount(0);
+    expect(container.querySelector('.sidebar-history-count').textContent).toBe('0 records');
+    sidebar.setHistoryCount(1);
+    expect(container.querySelector('.sidebar-history-count').textContent).toBe('1 record');
+    sidebar.setHistoryCount(42);
+    expect(container.querySelector('.sidebar-history-count').textContent).toBe('42 records');
+  });
+
+  it('v2.13.0: clicking Clear (with confirm) fires onClearHistory', () => {
+    const onClearHistory = vi.fn();
+    const c2 = document.createElement('div');
+    document.body.appendChild(c2);
+    new Sidebar(c2, { onClearHistory });
+    // mock window.confirm to return true
+    const oldConfirm = window.confirm;
+    window.confirm = () => true;
+    try {
+      c2.querySelector('.sidebar-history-clear').click();
+      expect(onClearHistory).toHaveBeenCalledTimes(1);
+    } finally {
+      window.confirm = oldConfirm;
+    }
+  });
+
+  it('v2.13.0: cancelling confirm does not fire onClearHistory', () => {
+    const onClearHistory = vi.fn();
+    const c2 = document.createElement('div');
+    document.body.appendChild(c2);
+    new Sidebar(c2, { onClearHistory });
+    const oldConfirm = window.confirm;
+    window.confirm = () => false;
+    try {
+      c2.querySelector('.sidebar-history-clear').click();
+      expect(onClearHistory).not.toHaveBeenCalled();
+    } finally {
+      window.confirm = oldConfirm;
+    }
   });
 });
