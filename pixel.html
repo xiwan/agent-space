@@ -495,6 +495,19 @@
       line-height: 1.4;
     }
     .cc-prompt:focus { outline: none; border-color: #60a5fa; }
+    /* v2.13.2: per-step ON 时大框降为次要角色 */
+    .cc-prompt-secondary {
+      opacity: 0.7;
+      border-color: #334155;
+    }
+    .cc-prompt-secondary:focus {
+      opacity: 1;
+      border-color: #60a5fa;
+    }
+    .cc-prompt-secondary::placeholder {
+      color: #64748b;
+      font-style: italic;
+    }
     .cc-step-prompts:not(:empty) {
       display: flex;
       flex-direction: column;

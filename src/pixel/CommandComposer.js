@@ -97,6 +97,12 @@ export function buildPayload(state) {
 
 /**
  * 校验 state, 返回错误数组 (空 = 通过). 单测可独立验.
+ *
+ * v2.13.2: prompt 必填规则放宽:
+ *   - single / conversation → 必填
+ *   - pipeline (sequence/parallel/race) + perStepPrompts=false → 必填
+ *   - pipeline + perStepPrompts=true: 每个 selected agent 的 stepPrompts 都非空 → 大框可空
+ *     (任一 step 空 → 大框必填作 fallback)
  */
 export function validateState(state) {
   const errs = [];
@@ -108,7 +114,25 @@ export function validateState(state) {
   const n = state.agents?.size ?? 0;
   if (state.mode === 'single' && n !== 1) errs.push(`single mode requires exactly 1 agent (got ${n})`);
   if (PIPELINE_MODES.has(state.mode) && n < 2) errs.push(`${state.mode} requires ≥2 agents (got ${n})`);
-  if (!state.prompt || !state.prompt.trim()) errs.push('prompt is empty');
+
+  // v2.13.2: prompt 必填判定
+  const promptIsEmpty = !state.prompt || !state.prompt.trim();
+  const isPipelineMultiStep = state.mode === 'sequence' || state.mode === 'parallel' || state.mode === 'race';
+  const usePerStep = isPipelineMultiStep && !!state.perStepPrompts;
+  if (usePerStep) {
+    // 每个 selected agent 的 stepPrompts 必须都非空, 否则大框作 fallback
+    const allStepsFilled = [...state.agents].every(a => {
+      const v = state.stepPrompts?.[a];
+      return typeof v === 'string' && v.trim().length > 0;
+    });
+    if (promptIsEmpty && !allStepsFilled) {
+      errs.push('prompt is empty (some step prompts missing — fill all steps or provide a shared prompt)');
+    }
+  } else {
+    // single / conversation / pipeline-without-perstep → prompt 必填
+    if (promptIsEmpty) errs.push('prompt is empty');
+  }
+
   if (state.mode === 'conversation') {
     const t = state.maxTurns ?? 6;
     if (!(t >= 2 && t <= 12)) errs.push('maxTurns must be 2-12');
@@ -246,12 +270,41 @@ export class CommandComposer {
 
   // ===== render =====
 
+  /**
+   * v2.13.2: 根据 mode + perStepPrompts + step 状态算 textarea placeholder.
+   */
+  _computePromptPlaceholder() {
+    const s = this._state;
+    const tail = '  (Cmd/Ctrl+Enter to submit, Esc to clear)';
+    if (s.mode === 'conversation') return 'Topic — what to discuss?' + tail;
+    if (s.mode === 'single') return 'Prompt — what should the agent do?' + tail;
+    // sequence / parallel / race
+    if (!s.perStepPrompts) return 'Prompt — sent to all agents' + tail;
+    // per-step ON: 看是否所有 step 都填了
+    const allFilled = [...s.agents].every(a => {
+      const v = s.stepPrompts?.[a];
+      return typeof v === 'string' && v.trim().length > 0;
+    });
+    if (allFilled && s.agents.size > 0) return 'Optional shared prompt' + tail;
+    return 'Shared prompt — fallback for empty steps' + tail;
+  }
+
+  /**
+   * v2.13.2: per-step ON + 是 pipeline 多步模式 → 大框降为次要角色.
+   */
+  _isPromptSecondary() {
+    const s = this._state;
+    return (s.mode === 'sequence' || s.mode === 'parallel' || s.mode === 'race') && !!s.perStepPrompts;
+  }
+
   _render() {
     const s = this._state;
     const isPipeline = PIPELINE_MODES.has(s.mode);
     const isConversation = s.mode === 'conversation';
     const showPerStep = isPipeline && !isConversation;
-    const promptLabel = isConversation ? 'Topic' : 'Prompt';
+    const promptPlaceholder = this._computePromptPlaceholder();
+    const promptSecondary = this._isPromptSecondary();
+    const promptClass = 'cc-prompt' + (promptSecondary ? ' cc-prompt-secondary' : '');
 
     this.container.innerHTML = `
       <div class="cc-row cc-row-controls">
@@ -286,7 +339,7 @@ export class CommandComposer {
       </div>
 
       <div class="cc-row cc-row-prompt">
-        <textarea class="cc-prompt" rows="3" placeholder="${promptLabel} — what should agent(s) do?  (Cmd/Ctrl+Enter to submit, Esc to clear)">${escapeHtml(s.prompt)}</textarea>
+        <textarea class="${promptClass}" rows="3" placeholder="${escapeAttr(promptPlaceholder)}">${escapeHtml(s.prompt)}</textarea>
         <div class="cc-step-prompts"></div>
       </div>
 
@@ -311,6 +364,8 @@ export class CommandComposer {
     if (psEl) psEl.addEventListener('change', (e) => {
       this._state.perStepPrompts = e.target.checked;
       this._renderStepPrompts();
+      // v2.13.2: 切换 per-step → 重算 placeholder + secondary class + Submit 启用态
+      this._renderSubmitState();
     });
     const promptEl = this.container.querySelector('.cc-prompt');
     promptEl.addEventListener('input', (e) => {
@@ -413,6 +468,8 @@ export class CommandComposer {
         const agent = e.target.dataset.agent;
         s.stepPrompts[agent] = e.target.value;
         autoResizeTextarea(e.target, 120);
+        // v2.13.2: step 填写状态变化 → 重算大框 placeholder + Submit 启用态
+        this._renderSubmitState();
       });
     });
   }
@@ -424,6 +481,20 @@ export class CommandComposer {
     btn.disabled = this._submitting || errs.length > 0;
     btn.textContent = this._submitting ? 'submitting…' : 'Submit ▶';
     btn.title = errs.length ? errs.join('; ') : 'Submit command';
+    // v2.13.2: 顺手刷 prompt placeholder (随 step 填写状态变化)
+    this._refreshPromptPlaceholder();
+  }
+
+  /**
+   * v2.13.2: 动态刷新 prompt textarea 的 placeholder + secondary class.
+   * 不重建 textarea, 保留 cursor / scroll / IME 状态.
+   */
+  _refreshPromptPlaceholder() {
+    const ta = this.container.querySelector('.cc-prompt');
+    if (!ta) return;
+    ta.placeholder = this._computePromptPlaceholder();
+    if (this._isPromptSecondary()) ta.classList.add('cc-prompt-secondary');
+    else ta.classList.remove('cc-prompt-secondary');
   }
 }
 

@@ -495,4 +495,167 @@ describe('CommandComposer (DOM)', () => {
     const c2 = new CommandComposer(container);
     expect(container.querySelector('.cc-empty').textContent).toMatch(/waiting for agent list/);
   });
+
+  // ============================================================
+  // v2.13.2: shared prompt becomes optional fallback when per-step ON
+  // ============================================================
+  it('v2.13.2: validate accepts empty prompt when per-step ON + all step prompts filled', () => {
+    const state = {
+      mode: 'sequence',
+      sync: 'async',
+      agents: new Set(['a', 'b']),
+      prompt: '',
+      perStepPrompts: true,
+      stepPrompts: { a: 'do A', b: 'do B' },
+      maxTurns: 6,
+    };
+    const errs = validateState(state);
+    expect(errs.find(e => e.includes('prompt'))).toBeUndefined();
+  });
+
+  it('v2.13.2: validate rejects empty prompt when per-step ON + at least one step empty', () => {
+    const state = {
+      mode: 'sequence',
+      sync: 'async',
+      agents: new Set(['a', 'b']),
+      prompt: '',
+      perStepPrompts: true,
+      stepPrompts: { a: 'do A' /* b missing */ },
+      maxTurns: 6,
+    };
+    const errs = validateState(state);
+    expect(errs.some(e => /step prompts missing/.test(e))).toBe(true);
+  });
+
+  it('v2.13.2: validate requires prompt for parallel even with per-step OFF', () => {
+    const state = {
+      mode: 'parallel',
+      sync: 'async',
+      agents: new Set(['a', 'b']),
+      prompt: '',
+      perStepPrompts: false,
+      stepPrompts: { a: 'x', b: 'y' },  // 即使填了也不算 (per-step OFF)
+      maxTurns: 6,
+    };
+    expect(validateState(state).some(e => e === 'prompt is empty')).toBe(true);
+  });
+
+  it('v2.13.2: validate still requires prompt for conversation', () => {
+    const state = {
+      mode: 'conversation', sync: 'async',
+      agents: new Set(['a', 'b']), prompt: '',
+      perStepPrompts: false, stepPrompts: {}, maxTurns: 6,
+    };
+    expect(validateState(state).some(e => e === 'prompt is empty')).toBe(true);
+  });
+
+  it('v2.13.2: placeholder reflects mode + per-step state', () => {
+    const c2 = new CommandComposer(container);
+    c2.setAvailableAgents([
+      { name: 'a', state: 'idle' }, { name: 'b', state: 'idle' }, { name: 'c', state: 'idle' },
+    ]);
+    const ta = container.querySelector('.cc-prompt');
+
+    // single (default)
+    expect(ta.placeholder).toMatch(/should the agent do/);
+
+    // sequence: per-step ON by default → "Shared prompt — fallback for empty steps"
+    container.querySelector('.cc-mode').value = 'sequence';
+    container.querySelector('.cc-mode').dispatchEvent(new Event('change'));
+    let ta2 = container.querySelector('.cc-prompt');
+    expect(ta2.placeholder).toMatch(/Shared prompt.*fallback/);
+
+    // 关闭 per-step → "Prompt — sent to all agents"
+    const cb = container.querySelector('.cc-perstep');
+    cb.checked = false;
+    cb.dispatchEvent(new Event('change'));
+    ta2 = container.querySelector('.cc-prompt');
+    expect(ta2.placeholder).toMatch(/sent to all agents/);
+
+    // parallel + per-step OFF (default for parallel) → 同 "sent to all agents"
+    container.querySelector('.cc-mode').value = 'parallel';
+    container.querySelector('.cc-mode').dispatchEvent(new Event('change'));
+    ta2 = container.querySelector('.cc-prompt');
+    expect(ta2.placeholder).toMatch(/sent to all agents/);
+
+    // conversation
+    container.querySelector('.cc-mode').value = 'conversation';
+    container.querySelector('.cc-mode').dispatchEvent(new Event('change'));
+    ta2 = container.querySelector('.cc-prompt');
+    expect(ta2.placeholder).toMatch(/Topic/);
+  });
+
+  it('v2.13.2: placeholder switches to "Optional shared prompt" when all step prompts filled', () => {
+    const c2 = new CommandComposer(container);
+    c2.setAvailableAgents([
+      { name: 'a', state: 'idle' }, { name: 'b', state: 'idle' },
+    ]);
+    container.querySelector('.cc-mode').value = 'sequence';
+    container.querySelector('.cc-mode').dispatchEvent(new Event('change'));
+    // 一开始有空 step
+    let ta = container.querySelector('.cc-prompt');
+    expect(ta.placeholder).toMatch(/fallback for empty steps/);
+    // 填完两个 step
+    const stepInputs = container.querySelectorAll('.cc-step-prompt');
+    stepInputs[0].value = 'do A';
+    stepInputs[0].dispatchEvent(new Event('input'));
+    stepInputs[1].value = 'do B';
+    stepInputs[1].dispatchEvent(new Event('input'));
+    ta = container.querySelector('.cc-prompt');
+    expect(ta.placeholder).toMatch(/Optional shared prompt/);
+  });
+
+  it('v2.13.2: per-step ON applies cc-prompt-secondary class; OFF removes it', () => {
+    const c2 = new CommandComposer(container);
+    c2.setAvailableAgents([
+      { name: 'a', state: 'idle' }, { name: 'b', state: 'idle' },
+    ]);
+    container.querySelector('.cc-mode').value = 'sequence';
+    container.querySelector('.cc-mode').dispatchEvent(new Event('change'));
+    let ta = container.querySelector('.cc-prompt');
+    expect(ta.classList.contains('cc-prompt-secondary')).toBe(true);
+
+    // 关闭 per-step
+    const cb = container.querySelector('.cc-perstep');
+    cb.checked = false;
+    cb.dispatchEvent(new Event('change'));
+    ta = container.querySelector('.cc-prompt');
+    expect(ta.classList.contains('cc-prompt-secondary')).toBe(false);
+  });
+
+  it('v2.13.2: Submit becomes enabled when all per-step prompts filled (no shared prompt)', async () => {
+    const onSubmit = vi.fn().mockResolvedValue();
+    const c2 = new CommandComposer(container, { onSubmit });
+    c2.setAvailableAgents([
+      { name: 'a', state: 'idle' }, { name: 'b', state: 'idle' },
+    ]);
+    container.querySelector('.cc-mode').value = 'sequence';
+    container.querySelector('.cc-mode').dispatchEvent(new Event('change'));
+    // 大框留空
+    expect(container.querySelector('.cc-submit').disabled).toBe(true);
+    // 填两个 step
+    const stepInputs = container.querySelectorAll('.cc-step-prompt');
+    stepInputs[0].value = 'do A';
+    stepInputs[0].dispatchEvent(new Event('input'));
+    stepInputs[1].value = 'do B';
+    stepInputs[1].dispatchEvent(new Event('input'));
+    // 现在 Submit 应启用
+    expect(container.querySelector('.cc-submit').disabled).toBe(false);
+  });
+
+  it('v2.13.2: buildPayload uses step prompt over empty shared prompt', () => {
+    const state = {
+      mode: 'sequence', sync: 'async',
+      agents: new Set(['a', 'b']),
+      prompt: '',
+      perStepPrompts: true,
+      stepPrompts: { a: 'A task', b: 'B task' },
+      maxTurns: 6,
+    };
+    const payload = buildPayload(state);
+    expect(payload.body.steps).toEqual([
+      { agent: 'a', prompt: 'A task' },
+      { agent: 'b', prompt: 'B task' },
+    ]);
+  });
 });
