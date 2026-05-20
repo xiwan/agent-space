@@ -83,7 +83,7 @@ export function extractAgentBubbles(remote, kind) {
 /**
  * v2.11.0: 把 server 响应抽成可读 conversation turns.
  *
- * 输出: { turns: Array<{agent, text}>, hasContent: boolean }
+ * 输出: { turns: Array<{agent, text, turn?, duration?, status?, isWinner?}>, hasContent: boolean }
  *
  * 提取优先级:
  *   run/job (单 agent, agent 名由 caller 关联):
@@ -95,8 +95,12 @@ export function extractAgentBubbles(remote, kind) {
  *     → 都没 → hasContent=false
  *
  *   pipeline:
- *     - 优先: response.turns = [{agent, content|text|output}, ...] (conversation mode)
- *     - 否则: response.steps[*] 同 run/job 同样的字段优先级, agent = step.agent
+ *     - conversation: response.transcript[] = [{turn, agent, content, duration}, ...]
+ *       (acp-bridge 真实字段名是 transcript, 不是 turns;
+ *        v2.13.1: 修复 v2.11.0 起的字段名错误)
+ *     - 向后兼容: 若无 transcript 但 response.turns 是数组 (旧测试 fixture) → 仍接受
+ *     - sequence/parallel/race: response.steps[] 同 run/job 同样的字段优先级,
+ *       agent = step.agent; 子项额外携带 status / duration / isWinner (race)
  *     - 都没 → hasContent=false
  *
  * 长 text 截断到 800 字符 + ' … (truncated)'.
@@ -104,7 +108,7 @@ export function extractAgentBubbles(remote, kind) {
  * @param {object} remote — server 原响应
  * @param {'run'|'job'|'pipeline'} kind
  * @param {string|null} fallbackAgent — caller 传单 agent (run/job 用)
- * @returns {{turns: Array<{agent: string|null, text: string}>, hasContent: boolean}}
+ * @returns {{turns: Array, hasContent: boolean}}
  */
 const MAX_TURN_TEXT = 800;
 
@@ -122,24 +126,52 @@ export function extractDisplayText(remote, kind, fallbackAgent = null) {
   }
 
   if (kind === 'pipeline') {
-    // conversation mode: response.turns
+    // === conversation: response.transcript[] (acp-bridge 真实字段) ===
+    if (Array.isArray(remote.transcript) && remote.transcript.length > 0) {
+      const turns = remote.transcript
+        .map(t => {
+          const text = pickSingleText(t);
+          if (text == null) return null;
+          const out = { agent: t.agent || fallbackAgent, text: truncate(text, MAX_TURN_TEXT) };
+          if (typeof t.turn === 'number') out.turn = t.turn;
+          if (typeof t.duration === 'number') out.duration = t.duration;
+          return out;
+        })
+        .filter(Boolean);
+      if (turns.length > 0) return { turns, hasContent: true };
+    }
+    // 向后兼容: response.turns 是数组形式 (老测试 fixture, 非 acp-bridge 真实形态)
     if (Array.isArray(remote.turns) && remote.turns.length > 0) {
       const turns = remote.turns
         .map(t => {
           const text = pickSingleText(t);
           if (text == null) return null;
-          return { agent: t.agent || fallbackAgent, text: truncate(text, MAX_TURN_TEXT) };
+          const out = { agent: t.agent || fallbackAgent, text: truncate(text, MAX_TURN_TEXT) };
+          if (typeof t.turn === 'number') out.turn = t.turn;
+          if (typeof t.duration === 'number') out.duration = t.duration;
+          return out;
         })
         .filter(Boolean);
       if (turns.length > 0) return { turns, hasContent: true };
     }
-    // sequence/parallel/race: steps[]
+    // === sequence/parallel/race: steps[] ===
     if (Array.isArray(remote.steps) && remote.steps.length > 0) {
+      // race 模式: 唯一 completed 的 step 是 winner
+      const isRaceMode = remote.mode === 'race';
+      const completedSteps = isRaceMode
+        ? remote.steps.filter(s => s && s.status === 'completed' && (s.result || s.output))
+        : null;
+      const isWinnerOf = (s) => isRaceMode && completedSteps && completedSteps.length === 1 && completedSteps[0] === s;
+
       const turns = remote.steps
         .map(s => {
           const text = pickSingleText(s);
           if (text == null) return null;
-          return { agent: s.agent || fallbackAgent, text: truncate(text, MAX_TURN_TEXT) };
+          const out = { agent: s.agent || fallbackAgent, text: truncate(text, MAX_TURN_TEXT) };
+          if (typeof s.duration === 'number') out.duration = s.duration;
+          if (typeof s.status === 'string' && s.status) out.status = s.status;
+          if (isWinnerOf(s)) out.isWinner = true;
+          return out;
         })
         .filter(Boolean);
       if (turns.length > 0) return { turns, hasContent: true };
@@ -148,6 +180,22 @@ export function extractDisplayText(remote, kind, fallbackAgent = null) {
   }
 
   return empty;
+}
+
+/**
+ * v2.13.1: 抽 pipeline 顶层 metadata, 用于卡片头展示.
+ * 返回字段全可选:
+ *   { stopReason, totalDuration, transcriptTurns, paused, mode }
+ */
+export function extractPipelineMetadata(remote) {
+  if (!remote || typeof remote !== 'object') return {};
+  const out = {};
+  if (typeof remote.stop_reason === 'string' && remote.stop_reason) out.stopReason = remote.stop_reason;
+  if (typeof remote.duration === 'number') out.totalDuration = remote.duration;
+  if (Array.isArray(remote.transcript)) out.transcriptTurns = remote.transcript.length;
+  if (remote.paused === true) out.paused = true;
+  if (typeof remote.mode === 'string') out.mode = remote.mode;
+  return out;
 }
 
 /**
@@ -478,20 +526,40 @@ export class CommandHistory {
     // v2.11.1: 优先用 server 返回的 agent 字段, 否则退到 ctx.agents[0]
     const fallbackAgent = (out && typeof out.agent === 'string' && out.agent) || r.agents[0] || null;
     const display = extractDisplayText(r.output, r.kind, fallbackAgent);
+    // v2.13.1: pipeline metadata
+    const meta = (r.kind === 'pipeline') ? extractPipelineMetadata(r.output) : {};
     let conversationBlock = '';
     if (display.hasContent) {
       const turnsHtml = display.turns.map(t => {
         const agentName = t.agent || '(unknown)';
+        // 子字段 chips: turn / duration / status / winner
+        const chips = [];
+        if (typeof t.turn === 'number') chips.push(`<span class="ch-turn-chip ch-turn-num">#${t.turn}</span>`);
+        if (typeof t.duration === 'number') chips.push(`<span class="ch-turn-chip ch-turn-dur">${t.duration.toFixed(1)}s</span>`);
+        if (t.isWinner) chips.push(`<span class="ch-turn-chip ch-turn-winner" title="race winner">🏆 winner</span>`);
+        if (t.status && t.status !== 'completed' && t.status !== 'succeeded') {
+          chips.push(`<span class="ch-turn-chip ch-step-status ch-step-status-${escapeHtml(t.status)}">${escapeHtml(t.status)}</span>`);
+        }
         return `
           <div class="ch-turn">
-            <div class="ch-turn-head">${escapeHtml(agentName)}</div>
+            <div class="ch-turn-head">
+              <span class="ch-turn-agent">${escapeHtml(agentName)}</span>
+              ${chips.join('')}
+            </div>
             <pre class="ch-turn-text">${escapeHtml(t.text)}</pre>
           </div>
         `;
       }).join('');
+      // 顶部 metadata chip 行 (conversation 专属)
+      const metaChips = [];
+      if (typeof meta.transcriptTurns === 'number') metaChips.push(`<span class="ch-meta-chip">💬 ${meta.transcriptTurns} turn${meta.transcriptTurns === 1 ? '' : 's'}</span>`);
+      if (meta.stopReason) metaChips.push(`<span class="ch-meta-chip ch-meta-stop">🛑 ${escapeHtml(meta.stopReason)}</span>`);
+      if (meta.paused) metaChips.push(`<span class="ch-meta-chip ch-meta-paused">⏸ paused</span>`);
+      const metaRow = metaChips.length > 0 ? `<div class="ch-meta-chips">${metaChips.join('')}</div>` : '';
       conversationBlock = `
         <details class="ch-convo-block" open>
           <summary>▾ Conversation (${display.turns.length} turn${display.turns.length === 1 ? '' : 's'})</summary>
+          ${metaRow}
           <div class="ch-turns">${turnsHtml}</div>
         </details>
       `;

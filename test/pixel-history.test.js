@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { CommandHistory, normalizeStatus, extractAgentBubbles, extractDisplayText, truncateRecordForStorage, loadRecordsFromStorage, saveRecordsToStorage, clearStorage } from '../src/pixel/CommandHistory.js';
+import { CommandHistory, normalizeStatus, extractAgentBubbles, extractDisplayText, extractPipelineMetadata, truncateRecordForStorage, loadRecordsFromStorage, saveRecordsToStorage, clearStorage } from '../src/pixel/CommandHistory.js';
 
 function mkClient(over = {}) {
   return {
@@ -328,7 +328,7 @@ describe('CommandHistory v2.11.0 card structure', () => {
     expect(convo).not.toBeNull();
     expect(convo.hasAttribute('open')).toBe(true);
     expect(convo.querySelector('.ch-turn-text').textContent).toBe('agent reply text');
-    expect(convo.querySelector('.ch-turn-head').textContent).toBe('a');
+    expect(convo.querySelector('.ch-turn-agent').textContent).toBe('a');
   });
 
   it('pipeline renders one ch-turn per step', () => {
@@ -343,9 +343,9 @@ describe('CommandHistory v2.11.0 card structure', () => {
     history._render();
     const turns = container.querySelectorAll('.ch-turn');
     expect(turns.length).toBe(2);
-    expect(turns[0].querySelector('.ch-turn-head').textContent).toBe('a');
+    expect(turns[0].querySelector('.ch-turn-agent').textContent).toBe('a');
     expect(turns[0].querySelector('.ch-turn-text').textContent).toBe('A out');
-    expect(turns[1].querySelector('.ch-turn-head').textContent).toBe('b');
+    expect(turns[1].querySelector('.ch-turn-agent').textContent).toBe('b');
   });
 
   it('raw JSON block always present when output exists, default folded', () => {
@@ -472,7 +472,7 @@ describe('v2.11.1 ACP Bridge job real-world response', () => {
     history._render();
     const turn = container.querySelector('.ch-turn');
     expect(turn).not.toBeNull();
-    expect(turn.querySelector('.ch-turn-head').textContent).toBe('codex');
+    expect(turn.querySelector('.ch-turn-agent').textContent).toBe('codex');
     expect(turn.querySelector('.ch-turn-text').textContent).toContain('李白');
   });
 
@@ -540,7 +540,7 @@ describe('v2.11.1 ACP Bridge job real-world response', () => {
     rec.output = { agent: 'qwen', result: 'rerouted reply' };
     history._render();
     // turn head 应显示 server 报的 'qwen', 不是 ctx 的 'codex'
-    expect(container.querySelector('.ch-turn-head').textContent).toBe('qwen');
+    expect(container.querySelector('.ch-turn-agent').textContent).toBe('qwen');
   });
 
   it('XSS defense: server result with HTML content is escaped', () => {
@@ -816,5 +816,278 @@ describe('v2.13.0 CommandHistory class with storage', () => {
     const note = container.querySelector('.ch-truncated-note');
     expect(note).not.toBeNull();
     expect(note.textContent).toMatch(/truncated for storage/i);
+  });
+});
+
+// ============================================================
+// v2.13.1: conversation transcript + multi-mode pipeline coverage
+// ============================================================
+describe('v2.13.1 extractDisplayText — conversation transcript', () => {
+  // 用户实测真实响应 (中国足球对话)
+  const realConvo = {
+    pipeline_id: '38d19e89-7d43-466d-b836-5e7594ef4b13',
+    mode: 'conversation',
+    status: 'completed',
+    steps: [
+      { agent: 'claude', status: 'pending' },
+      { agent: 'harness', status: 'pending' },
+    ],
+    duration: 34.9,
+    paused: false,
+    participants: ['claude', 'harness'],
+    topic: '讨论中国足球',
+    config: { max_turns: 6 },
+    turns: 6,
+    stop_reason: 'MAX_TURNS',
+    transcript: [
+      { turn: 1, agent: 'claude', content: '我觉得青训问题严重。', duration: 11.6 },
+      { turn: 2, agent: 'harness', content: '确实如此, 但还有更深层。', duration: 2.1 },
+      { turn: 3, agent: 'claude', content: '联赛也要改革。', duration: 9.1 },
+    ],
+  };
+
+  it('reads transcript[] (not steps[]) for conversation mode', () => {
+    const d = extractDisplayText(realConvo, 'pipeline');
+    expect(d.hasContent).toBe(true);
+    expect(d.turns.length).toBe(3);
+    expect(d.turns[0].agent).toBe('claude');
+    expect(d.turns[0].text).toContain('青训');
+  });
+
+  it('preserves turn / duration on each transcript entry', () => {
+    const d = extractDisplayText(realConvo, 'pipeline');
+    expect(d.turns[0].turn).toBe(1);
+    expect(d.turns[0].duration).toBe(11.6);
+    expect(d.turns[2].turn).toBe(3);
+    expect(d.turns[2].duration).toBe(9.1);
+  });
+
+  it('does not fall through to steps[] when transcript exists', () => {
+    // realConvo.steps 全 pending — 如果用 steps 路径会 hasContent=false
+    const d = extractDisplayText(realConvo, 'pipeline');
+    expect(d.hasContent).toBe(true);
+    // 不应有 status (transcript 路径不传 status)
+    expect(d.turns[0].status).toBeUndefined();
+  });
+
+  it('falls back to legacy turns[] field when transcript missing', () => {
+    // 旧测试 fixture 兼容
+    const legacy = { mode: 'conversation', turns: [{ agent: 'a', content: 'hi' }] };
+    const d = extractDisplayText(legacy, 'pipeline');
+    expect(d.hasContent).toBe(true);
+    expect(d.turns[0].text).toBe('hi');
+  });
+
+  it('falls back to steps[] when transcript empty', () => {
+    const r = { mode: 'conversation', transcript: [], steps: [{ agent: 'a', result: 'fallback' }] };
+    const d = extractDisplayText(r, 'pipeline');
+    expect(d.hasContent).toBe(true);
+    expect(d.turns[0].text).toBe('fallback');
+  });
+});
+
+describe('v2.13.1 extractDisplayText — sequence/parallel/race steps', () => {
+  it('preserves step.status + duration in turn', () => {
+    const r = {
+      mode: 'sequence',
+      steps: [
+        { agent: 'a', status: 'completed', result: 'A done', duration: 0.9 },
+        { agent: 'b', status: 'failed', error: 'oops', result: '' },  // result empty
+        { agent: 'c', status: 'completed', result: 'C done', duration: 1.5 },
+      ],
+    };
+    const d = extractDisplayText(r, 'pipeline');
+    // a + c (b 没 result 被过滤)
+    expect(d.turns.length).toBe(2);
+    expect(d.turns[0].status).toBe('completed');
+    expect(d.turns[0].duration).toBe(0.9);
+    expect(d.turns[1].duration).toBe(1.5);
+  });
+
+  it('race mode: only one completed step → marks isWinner', () => {
+    const r = {
+      mode: 'race',
+      steps: [
+        { agent: 'a', status: 'pending' },
+        { agent: 'b', status: 'completed', result: 'B wins', duration: 2.0 },
+        { agent: 'c', status: 'pending' },
+      ],
+    };
+    const d = extractDisplayText(r, 'pipeline');
+    expect(d.turns.length).toBe(1);
+    expect(d.turns[0].agent).toBe('b');
+    expect(d.turns[0].isWinner).toBe(true);
+  });
+
+  it('non-race mode: no isWinner even if only one step has result', () => {
+    const r = {
+      mode: 'sequence',
+      steps: [
+        { agent: 'a', status: 'completed', result: 'A done' },
+        { agent: 'b', status: 'pending' },
+      ],
+    };
+    const d = extractDisplayText(r, 'pipeline');
+    expect(d.turns[0].isWinner).toBeUndefined();
+  });
+
+  it('parallel mode preserves multiple completed steps', () => {
+    const r = {
+      mode: 'parallel',
+      steps: [
+        { agent: 'a', status: 'completed', result: 'A out', duration: 5.1 },
+        { agent: 'b', status: 'completed', result: 'B out', duration: 3.2 },
+      ],
+    };
+    const d = extractDisplayText(r, 'pipeline');
+    expect(d.turns.length).toBe(2);
+    expect(d.turns[0].duration).toBe(5.1);
+    expect(d.turns[1].duration).toBe(3.2);
+  });
+});
+
+describe('v2.13.1 extractPipelineMetadata', () => {
+  it('extracts stop_reason / total duration / transcript count', () => {
+    const r = {
+      mode: 'conversation', status: 'completed', duration: 34.9,
+      stop_reason: 'MAX_TURNS', paused: false,
+      transcript: [{ turn: 1, agent: 'a', content: 'x' }, { turn: 2, agent: 'b', content: 'y' }],
+    };
+    const m = extractPipelineMetadata(r);
+    expect(m.stopReason).toBe('MAX_TURNS');
+    expect(m.totalDuration).toBe(34.9);
+    expect(m.transcriptTurns).toBe(2);
+    expect(m.paused).toBeUndefined();
+    expect(m.mode).toBe('conversation');
+  });
+
+  it('paused=true surfaces in metadata', () => {
+    const m = extractPipelineMetadata({ paused: true });
+    expect(m.paused).toBe(true);
+  });
+
+  it('null/empty input → empty metadata', () => {
+    expect(extractPipelineMetadata(null)).toEqual({});
+    expect(extractPipelineMetadata({})).toEqual({});
+  });
+});
+
+describe('v2.13.1 card rendering — conversation', () => {
+  let container;
+  beforeEach(() => {
+    if (typeof localStorage !== 'undefined') localStorage.clear();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+
+  it('conversation: turn # and duration chips render in turn head', () => {
+    const h = new CommandHistory(container, { client: mkClient() });
+    h.pushSubmission(
+      { kind: 'pipeline', mode: 'conversation', agents: ['a', 'b'], prompt: 'topic' },
+      { pipeline_id: 'p1' }
+    );
+    const rec = h.list()[0];
+    rec.status = 'succeeded';
+    rec.output = {
+      mode: 'conversation', status: 'completed', duration: 12.3,
+      stop_reason: 'MAX_TURNS',
+      transcript: [
+        { turn: 1, agent: 'a', content: 'hi', duration: 11.6 },
+        { turn: 2, agent: 'b', content: 'hello', duration: 2.1 },
+      ],
+    };
+    h._render();
+
+    // 两个 turn
+    const turns = container.querySelectorAll('.ch-turn');
+    expect(turns.length).toBe(2);
+
+    // 第一个 turn 的 chips
+    const head0 = turns[0].querySelector('.ch-turn-head');
+    expect(head0.querySelector('.ch-turn-num').textContent).toBe('#1');
+    expect(head0.querySelector('.ch-turn-dur').textContent).toBe('11.6s');
+
+    // metadata chips 在 turns 上方
+    const metaChips = container.querySelectorAll('.ch-meta-chip');
+    expect(metaChips.length).toBeGreaterThanOrEqual(2);
+    const stopChip = container.querySelector('.ch-meta-stop');
+    expect(stopChip).not.toBeNull();
+    expect(stopChip.textContent).toMatch(/MAX_TURNS/);
+  });
+
+  it('race mode: winner step gets 🏆 winner chip', () => {
+    const h = new CommandHistory(container, { client: mkClient() });
+    h.pushSubmission(
+      { kind: 'pipeline', mode: 'race', agents: ['a', 'b', 'c'], prompt: 'race them' },
+      { pipeline_id: 'p1' }
+    );
+    const rec = h.list()[0];
+    rec.status = 'succeeded';
+    rec.output = {
+      mode: 'race',
+      steps: [
+        { agent: 'a', status: 'pending' },
+        { agent: 'b', status: 'completed', result: 'B wins', duration: 2.0 },
+        { agent: 'c', status: 'pending' },
+      ],
+    };
+    h._render();
+    const winner = container.querySelector('.ch-turn-winner');
+    expect(winner).not.toBeNull();
+    expect(winner.textContent).toMatch(/winner/i);
+  });
+
+  it('failed step status renders as red chip', () => {
+    const h = new CommandHistory(container, { client: mkClient() });
+    h.pushSubmission(
+      { kind: 'pipeline', mode: 'sequence', agents: ['a', 'b'], prompt: 'do' },
+      { pipeline_id: 'p1' }
+    );
+    const rec = h.list()[0];
+    rec.status = 'succeeded';
+    rec.output = {
+      mode: 'sequence',
+      steps: [
+        { agent: 'a', status: 'failed', result: 'oops happened', duration: 1.0 },
+      ],
+    };
+    h._render();
+    const status = container.querySelector('.ch-step-status-failed');
+    expect(status).not.toBeNull();
+    expect(status.textContent).toBe('failed');
+  });
+
+  it('conversation paused metadata chip renders when paused=true', () => {
+    const h = new CommandHistory(container, { client: mkClient() });
+    h.pushSubmission(
+      { kind: 'pipeline', mode: 'conversation', agents: ['a', 'b'], prompt: 'topic' },
+      { pipeline_id: 'p1' }
+    );
+    const rec = h.list()[0];
+    rec.status = 'succeeded';
+    rec.output = {
+      mode: 'conversation', paused: true,
+      transcript: [{ turn: 1, agent: 'a', content: 'x' }],
+    };
+    h._render();
+    expect(container.querySelector('.ch-meta-paused')).not.toBeNull();
+  });
+
+  it('XSS defense in transcript content', () => {
+    const h = new CommandHistory(container, { client: mkClient() });
+    h.pushSubmission(
+      { kind: 'pipeline', mode: 'conversation', agents: ['a'], prompt: 'p' },
+      { pipeline_id: 'p1' }
+    );
+    const rec = h.list()[0];
+    rec.status = 'succeeded';
+    rec.output = {
+      mode: 'conversation',
+      transcript: [{ turn: 1, agent: 'a', content: '<img src=x onerror=alert(1)>' }],
+    };
+    h._render();
+    const turn = container.querySelector('.ch-turn-text');
+    expect(turn.textContent).toBe('<img src=x onerror=alert(1)>');
+    expect(turn.querySelector('img')).toBeNull();
   });
 });
