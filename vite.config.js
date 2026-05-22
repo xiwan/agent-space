@@ -9,6 +9,22 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PIXEL_MAPS_DIR = join(__dirname, 'public', 'pixel', 'maps');
 const VALID_BG_IDS = new Set(['level1', 'level2', 'level3', 'level3.5', 'level4', 'default']);
 
+function pixelAsIndexDevMiddleware() {
+  return {
+    name: 'pixel-as-index-dev',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url === '/' || req.url === '/index.html') {
+          res.writeHead(302, { Location: '/pixel.html' });
+          res.end();
+          return;
+        }
+        next();
+      });
+    },
+  };
+}
+
 function pixelMapsMiddleware() {
   return {
     name: 'pixel-maps-dev',
@@ -84,16 +100,34 @@ function pixelMapsMiddleware() {
   };
 }
 
+// Build 后把 dist/pixel.html 复制为 dist/index.html (CDN 根 URL 直接渲染 pixel office)
+function pixelAsIndexPlugin() {
+  return {
+    name: 'pixel-as-index',
+    apply: 'build',
+    async closeBundle() {
+      const distDir = join(__dirname, 'dist');
+      const pixelPath = join(distDir, 'pixel.html');
+      const indexPath = join(distDir, 'index.html');
+      try {
+        const html = await readFile(pixelPath, 'utf-8');
+        await writeFile(indexPath, html);
+        console.log('[pixel-as-index] dist/index.html ← pixel.html');
+      } catch (e) {
+        console.error('[pixel-as-index] failed:', e.message);
+        throw e;
+      }
+    },
+  };
+}
+
 export default defineConfig({
   base: './',
-  plugins: [pixelMapsMiddleware()],
+  plugins: [pixelAsIndexDevMiddleware(), pixelMapsMiddleware(), pixelAsIndexPlugin()],
   build: {
     outDir: 'dist',
     rollupOptions: {
       input: {
-        main: resolve(__dirname, 'index.html'),
-        demo: resolve(__dirname, 'demo.html'),
-        lpc: resolve(__dirname, 'lpc.html'),
         pixel: resolve(__dirname, 'pixel.html'),
       },
     },

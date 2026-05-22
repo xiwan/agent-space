@@ -4,10 +4,12 @@ dist/
 nohup.out
 .dev.pid
 
+# Art archive (moved from public/assets + design/)
+.art-archive/
+
 # AIDLC local files
 OPERATIONS.md
 versions/
-design/
 scratch/
 
 # External agent notes

@@ -2,25 +2,19 @@
 
 Pixel-art AI Agent office — real-time visualization of ACP Bridge agents.
 
-![Agent Space](public/test001.png)
+![Agent Space](public/pixeloffice.png)
 
-Dual-zone layout: Office (left) + Living Room (right). Agents walk to office when busy, relax in living room when idle.
-Responsive: side-by-side on desktop, stacked on mobile. Draggable divider between panels.
+Agents walk to their desk when busy, wander around the office when idle. Click a sprite or sidebar card to highlight the matching agent.
 
-## Views
+## Features
 
-Two independent entry points share the same Bridge backend:
-
-- **`/`** — Phaser 4 dual-zone office (default).
-- **`/pixel.html`** — standalone Canvas pixel-office viewer (v2.4.0). Lighter weight,
-  driven by `/health` + `/health/agents` for real-time per-session `busy` state.
-  Right sidebar lists all agents as cards; click a card or sprite to highlight
-  the matching agent with a white pixel outline (toggle to deselect).
-  Header dropdown switches between 5 office backgrounds (selection persisted
-  via localStorage, rendered 1:1 with letterboxing). Click ✏ Edit to open the
-  per-map editor: paint obstacles + assign per-agent home/work/idle zones on a
-  16×16 grid; agents use A* pathfinding to walk around obstacles when their
-  state changes. See [CREDITS.md](CREDITS.md) for sprite & background attribution.
+- Canvas pixel-office with 5 switchable backgrounds
+- Per-map editor: paint obstacles + assign per-agent home/work/idle zones on a 16×16 grid
+- A* pathfinding around obstacles
+- Intermittent chat bubbles + busy emoji indicators
+- Command Composer: invoke ACP Bridge runs/jobs/pipelines from the UI
+- Sidebar: Agents / History / Usage tabs
+- Cross-device map sharing (server-side persistence)
 
 ## Quick Start
 
@@ -29,8 +23,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173 in your browser. The pixel viewer is at
-http://localhost:5173/pixel.html.
+Open http://localhost:5173 in your browser.
 
 ### Production
 
@@ -49,7 +42,32 @@ ACP_BRIDGE_TOKEN=<token> npm run serve
 
 ## Tech Stack
 
-- **Phaser 4** — 2D pixel-art game engine
+- **Canvas** — direct pixel rendering, sprite state machine
 - **Vite** — bundler + dev proxy
 - **Express** — production static server + API proxy
 - **JavaScript (ES Modules)**
+
+## Project Structure
+
+```
+pixel.html              — main entry point
+src/pixel/              — all application modules
+  pixel-main.js         — boot + wiring
+  PixelRenderer.js      — Canvas renderer, sprites, wander, bubbles
+  BridgeAdapter.js      — bridge JSON → render config
+  MapConfig.js          — grid schema, localStorage + server sync
+  MapEditor.js          — grid editor (pointer events, mobile-friendly)
+  PathFinder.js         — A* pathfinding
+  CommandComposer.js    — form-driven agent invocation
+  CommandClient.js      — HTTP client for runs/jobs/pipelines
+  CommandHistory.js     — persistent history (localStorage)
+  Sidebar.js            — tabs, agent cards, selection sync
+public/pixel/           — backgrounds + character sprites + maps
+serve.js                — Express prod server + API proxy
+vite.config.js          — dev proxy + pixel-maps middleware
+dev.sh                  — nohup-based start/stop/restart/status/logs
+```
+
+## License
+
+See [CREDITS.md](CREDITS.md) for sprite & background attribution.
