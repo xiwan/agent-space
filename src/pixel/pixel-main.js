@@ -94,9 +94,11 @@ async function main() {
     assetPath: '/pixel',
     onAgentClick: (agent) => toggleSelected(agent.name),
   });
-  // v2.5.0: 默认 paused + sprite 隐藏
-  renderer.setPaused(true);
-  renderer.setSpritesVisible(false);
+  // v2.13.4: 默认就 running (从 v2.5.0 的 paused+hidden 翻转)
+  renderer.setPaused(false);
+  renderer.setSpritesVisible(true);
+  // 首次 onConfig 时强制 spawn 在 home zone (等价于 v2.5.0 第一次点 Start)
+  let firstSpawnPending = true;
 
   const sidebar = new Sidebar(sidebarEl, {
     onToggle: (name) => toggleSelected(name),
@@ -270,6 +272,12 @@ async function main() {
     lastAgents = cfg.agents || [];
     lastBridgeCfg = cfg;
 
+    // v2.13.4: 首次拿到 cfg 时一律按 forceSpawn (从 home zone 出现)
+    if (firstSpawnPending) {
+      forceSpawn = true;
+      firstSpawnPending = false;
+    }
+
     // 路径计算: paused 时不算 (无意义); spritesVisible=false 时也不算 (省点 CPU);
     // forceSpawn 时即便 sprite 还没存在也允许首帧 spawn, path 不重要 (起点=终点)
     const willRender = renderer.areSpritesVisible() && !renderer.isPaused();
@@ -328,7 +336,11 @@ async function main() {
   const poller = new BridgePoller({
     intervalMs: POLL_INTERVAL_MS,
     onConfig: (cfg) => onConfigInternal(cfg),
-    onError: (err) => setStatus(`bridge error: ${err.message}`, 'error'),
+    // v2.13.4: 显示连续失败次数, 让用户区分一次抖动 vs 真挂了
+    onError: (err, n = 0) => {
+      const suffix = n > 1 ? ` (retry ${n})` : '';
+      setStatus(`bridge error: ${err.message}${suffix}`, 'error');
+    },
   });
 
   await reloadMapConfig();

@@ -502,3 +502,191 @@ describe('adaptToPixelConfig with pipelines (v2.1.1)', () => {
     expect(codex.y).toBe(400);
   });
 });
+
+
+// =====================================================================
+// v2.13.4 — BridgePoller resilience (fetch timeout + serial guard +
+// consecutive failure counter)
+// =====================================================================
+
+import { BridgePoller } from '../src/pixel/BridgeAdapter.js';
+
+// Helper: replace global fetch for the duration of the test, restore after.
+function withFetch(fakeFetch, fn) {
+  const orig = globalThis.fetch;
+  globalThis.fetch = fakeFetch;
+  return Promise.resolve(fn()).finally(() => { globalThis.fetch = orig; });
+}
+
+const flushMicrotasks = () => new Promise((r) => setImmediate(r));
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+describe('BridgePoller — v2.13.4 resilience', () => {
+  it('fetch hang → AbortController fires after fetchTimeoutMs', async () => {
+    let abortObserved = 0;
+    const hangingFetch = (url, opts = {}) => new Promise((_, reject) => {
+      if (opts.signal) {
+        opts.signal.addEventListener('abort', () => {
+          abortObserved++;
+          reject(new DOMException('aborted', 'AbortError'));
+        });
+      }
+    });
+
+    await withFetch(hangingFetch, async () => {
+      const errors = [];
+      const poller = new BridgePoller({
+        intervalMs: 10_000,
+        fetchTimeoutMs: 50,
+        onConfig: () => {},
+        onError: (e, n) => errors.push({ msg: e.message, n }),
+      });
+
+      // 直接调用 _tick 走完一次 (start 会启 setInterval, 测试不需要)
+      await poller._tick();
+
+      expect(abortObserved).toBeGreaterThanOrEqual(1);
+      expect(errors).toHaveLength(1);
+      expect(errors[0].msg).toBe('health unreachable');
+      expect(errors[0].n).toBe(1);
+    });
+  });
+
+  it('consecutive failures increment, success resets to 0', async () => {
+    let mode = 'fail';
+    const flexFetch = () => {
+      if (mode === 'fail') return Promise.resolve(null).then(() => { throw new Error('net'); });
+      return Promise.resolve({
+        status: 200,
+        json: async () => ({ agents: [] }),
+      });
+    };
+
+    await withFetch(flexFetch, async () => {
+      const errors = [];
+      let lastCfg = null;
+      const poller = new BridgePoller({
+        intervalMs: 10_000,
+        fetchTimeoutMs: 50,
+        onConfig: (cfg) => { lastCfg = cfg; },
+        onError: (e, n) => errors.push(n),
+      });
+
+      await poller._tick(); // fail 1
+      await poller._tick(); // fail 2
+      await poller._tick(); // fail 3
+      expect(errors).toEqual([1, 2, 3]);
+
+      mode = 'ok';
+      await poller._tick(); // success → reset
+      expect(lastCfg).not.toBeNull();
+      expect(poller._consecutiveFailures).toBe(0);
+
+      mode = 'fail';
+      await poller._tick(); // fail again — counter restarts at 1
+      expect(errors[errors.length - 1]).toBe(1);
+    });
+  });
+
+  it('serial guard: while one tick is in flight, second tick is skipped', async () => {
+    const pendingResolvers = [];
+    let fetchCallCount = 0;
+    const slowFetch = () => {
+      fetchCallCount++;
+      return new Promise((resolve) => { pendingResolvers.push(resolve); });
+    };
+
+    await withFetch(slowFetch, async () => {
+      let cfgCount = 0;
+      const poller = new BridgePoller({
+        intervalMs: 10_000,
+        fetchTimeoutMs: 10_000,
+        onConfig: () => { cfgCount++; },
+        onError: () => {},
+      });
+
+      // 同时发起两次 _tick — 第二次应该被 _inFlight 直接 return
+      const t1 = poller._tick();
+      const t2 = poller._tick();
+      await flushMicrotasks();
+
+      // 第一次 _tick 发 4 个 fetch (health / health-agents / pipelines + heartbeat,
+      // 因为 _tickCount=0 时 0 % 12 === 0 触发 heartbeat).
+      // 第二次 _tick 不应触发任何额外 fetch.
+      expect(fetchCallCount).toBe(4);
+      expect(poller._inFlight).toBe(true);
+
+      // 第二次 tick 立即结束 (skip 路径), 不等任何 fetch
+      await t2;
+      expect(poller._inFlight).toBe(true); // t1 仍在飞
+
+      // 解开所有 hang, 让 t1 完成
+      for (const resolve of pendingResolvers) {
+        resolve({ status: 200, json: async () => ({ agents: [] }) });
+      }
+      await t1;
+      expect(poller._inFlight).toBe(false);
+      expect(cfgCount).toBe(1); // 只有 t1 触发了 onConfig
+    });
+  });
+
+  it('onError signature is backward compatible (caller can ignore second arg)', async () => {
+    const failFetch = () => Promise.reject(new Error('boom'));
+
+    await withFetch(failFetch, async () => {
+      // 模拟旧签名 (err) => ...
+      let received = null;
+      const poller = new BridgePoller({
+        intervalMs: 10_000,
+        fetchTimeoutMs: 50,
+        onConfig: () => {},
+        onError: (err) => { received = err.message; },
+      });
+
+      await poller._tick();
+      expect(received).toBe('health unreachable');
+    });
+  });
+
+  it('5xx still parses body (bridge unhealthy 503 contract preserved)', async () => {
+    const fiveHundredFetch = () => Promise.resolve({
+      status: 503,
+      json: async () => ({
+        agents: [{ name: 'a1', mode: 'acp', enabled: true, alive: 0, healthy: false }],
+      }),
+    });
+
+    await withFetch(fiveHundredFetch, async () => {
+      let cfg = null;
+      const poller = new BridgePoller({
+        intervalMs: 10_000,
+        fetchTimeoutMs: 50,
+        onConfig: (c) => { cfg = c; },
+        onError: () => {},
+      });
+
+      await poller._tick();
+      expect(cfg).not.toBeNull();
+      expect(cfg.agents).toHaveLength(1);
+      expect(cfg.agents[0].name).toBe('a1');
+    });
+  });
+
+  it('4xx returns null (no body parsing)', async () => {
+    const fourOhFourFetch = () => Promise.resolve({ status: 404, json: async () => ({}) });
+
+    await withFetch(fourOhFourFetch, async () => {
+      const errors = [];
+      const poller = new BridgePoller({
+        intervalMs: 10_000,
+        fetchTimeoutMs: 50,
+        onConfig: () => {},
+        onError: (e, n) => errors.push({ msg: e.message, n }),
+      });
+
+      await poller._tick();
+      expect(errors).toHaveLength(1);
+      expect(errors[0].msg).toBe('health unreachable');
+    });
+  });
+});

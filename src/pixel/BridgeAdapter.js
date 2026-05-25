@@ -190,15 +190,20 @@ export function adaptToPixelConfig(health, heartbeat, healthAgents, pipelines, o
  *   - /heartbeat      — 每 N tick 一次 (description/domains 慢变化, 默认 12 = 60s)
  */
 export class BridgePoller {
-  constructor({ intervalMs = 5000, heartbeatEveryNTicks = 12, onConfig, onError } = {}) {
+  constructor({ intervalMs = 5000, heartbeatEveryNTicks = 12, fetchTimeoutMs = 4000, onConfig, onError } = {}) {
     this.intervalMs = intervalMs;
     this.heartbeatEveryNTicks = heartbeatEveryNTicks;
+    this.fetchTimeoutMs = fetchTimeoutMs;
     this.onConfig = onConfig;
     this.onError = onError || ((e) => console.warn('[BridgePoller]', e.message));
     this.timer = null;
     this._aborted = false;
     this._tickCount = 0;
     this._cachedHeartbeat = null;
+
+    // v2.13.4: 串行守卫 + 连续失败计数
+    this._inFlight = false;
+    this._consecutiveFailures = 0;
 
     // v2.4.0: mapConfig + helper 函数 (依赖反转, 由 caller 注入避免循环 import)
     this._mapConfig = null;
@@ -230,13 +235,28 @@ export class BridgePoller {
 
   async _tick() {
     if (this._aborted) return;
+    // v2.13.4: 串行守卫 — 上一次 tick 还没 settle, 跳过这次, 防止 fetch hang 时 setInterval 堆叠
+    if (this._inFlight) return;
+    this._inFlight = true;
+
     try {
+      // v2.13.4: AbortController 超时 (默认 4s, 比 5s tick 短一拍, 避免堆叠)
+      // 网络层错误 / abort / 4xx 都吞成 null, 由上层判断 health 是否拿到.
       // 注意: ACP Bridge 在 status=unhealthy 时返回 HTTP 503, 但 body 完全有效.
-      // 这里只丢 4xx 和网络错误, 5xx 仍然解析 body — agent 状态信息是有用的.
+      // 这里只丢 4xx, 5xx 仍然解析 body — agent 状态信息是有用的.
+      const timeoutMs = this.fetchTimeoutMs;
       const safeFetch = async (url) => {
-        const r = await fetch(url);
-        if (r.status >= 400 && r.status < 500) return null;
-        try { return await r.json(); } catch { return null; }
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), timeoutMs);
+        try {
+          const r = await fetch(url, { signal: ctrl.signal });
+          if (r.status >= 400 && r.status < 500) return null;
+          try { return await r.json(); } catch { return null; }
+        } catch {
+          return null;
+        } finally {
+          clearTimeout(t);
+        }
       };
 
       const fetches = [
@@ -259,7 +279,8 @@ export class BridgePoller {
       this._tickCount++;
 
       if (!health) {
-        this.onError(new Error('health unreachable'));
+        this._consecutiveFailures++;
+        this.onError(new Error('health unreachable'), this._consecutiveFailures);
         return;
       }
 
@@ -268,9 +289,13 @@ export class BridgePoller {
         getTargetCell: this._getTargetCell,
         cellToPx: this._cellToPx,
       });
+      this._consecutiveFailures = 0;
       this.onConfig(cfg);
     } catch (e) {
-      this.onError(e);
+      this._consecutiveFailures++;
+      this.onError(e, this._consecutiveFailures);
+    } finally {
+      this._inFlight = false;
     }
   }
 }
