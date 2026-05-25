@@ -395,6 +395,81 @@
       max-height: 35vh;
       overflow: auto;
     }
+
+    /* === v2.14.0: Composer tab bar === */
+    .composer-tabs {
+      display: flex;
+      gap: 0;
+      flex-shrink: 0;
+      margin-bottom: 6px;
+    }
+    .composer-tab {
+      background: #0f172a;
+      color: #94a3b8;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      padding: 5px 12px;
+      font-family: monospace;
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      cursor: pointer;
+    }
+    .composer-tab:hover { color: #e2e8f0; }
+    .composer-tab.active {
+      color: #e2e8f0;
+      border-bottom-color: #60a5fa;
+    }
+    .composer-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    /* === v2.14.0: Artifact Composer (Quick mode) === */
+    .ac-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .ac-row-select { margin-bottom: 2px; }
+    .ac-select {
+      flex: 1;
+      background: #1e293b;
+      color: #e2e8f0;
+      border: 1px solid #475569;
+      border-radius: 4px;
+      padding: 5px 8px;
+      font-family: monospace;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .ac-select:focus { outline: none; border-color: #60a5fa; }
+    .ac-agents {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .ac-prompt {
+      width: 100%;
+      background: #1e293b;
+      color: #e2e8f0;
+      border: 1px solid #475569;
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-family: monospace;
+      font-size: 12px;
+      resize: vertical;
+      min-height: 40px;
+      max-height: 120px;
+      box-sizing: border-box;
+      line-height: 1.4;
+    }
+    .ac-prompt:focus { outline: none; border-color: #60a5fa; }
+    .ac-row-actions { align-items: center; }
+    .ac-status {
+      font-size: 11px;
+      color: #94a3b8;
+    }
+    .ac-status[data-kind="ok"]    { color: #34d399; }
+    .ac-status[data-kind="error"] { color: #f87171; }
+    .ac-empty { font-size: 11px; color: #64748b; font-style: italic; }
     .cc-row {
       display: flex;
       gap: 10px;

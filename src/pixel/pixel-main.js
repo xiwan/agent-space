@@ -21,6 +21,7 @@ import { CommandComposer } from './CommandComposer.js';
 import { CommandClient } from './CommandClient.js';
 import { CommandHistory } from './CommandHistory.js';
 import { UsageView } from './UsageView.js';
+import { ArtifactComposer } from './ArtifactComposer.js';
 import {
   loadMapConfig, saveMapConfig, emptyMapConfig,
   loadMapConfigAsync, saveMapConfigAsync,
@@ -120,22 +121,79 @@ async function main() {
     onCountChange: (n) => sidebar.setHistoryCount(n),
   }) : null;
 
-  const composer = composerEl ? new CommandComposer(composerEl, {
-    onSubmit: async (payload) => {
-      // 推断 ctx
-      const state = composer.getState();
-      const kind = payload.endpoint === '/api/runs' ? 'run'
-                 : payload.endpoint === '/api/jobs' ? 'job'
-                 : 'pipeline';
-      const agents = [...state.agents];
-      const prompt = state.prompt;
-      const mode = state.mode;
-      const response = await commandClient.submit(payload);
-      if (history) history.pushSubmission({ kind, mode, agents, prompt }, response);
-      // 切换到 history tab 让用户立刻看到反馈
-      // (非自动: 留 sidebar tab 选择给用户; 但状态条提示 + 卡片在 history 里等着)
-    },
-  }) : null;
+  // === v2.14.0: Artifact (Quick) + Command (Advanced) tab 切换 ===
+  let composer = null;
+  let artifactComposer = null;
+
+  if (composerEl) {
+    // 构建 tab bar + 两个 panel
+    const tabBar = document.createElement('div');
+    tabBar.className = 'composer-tabs';
+    const tabQuick = document.createElement('button');
+    tabQuick.className = 'composer-tab active';
+    tabQuick.textContent = '⚡ Quick';
+    const tabAdvanced = document.createElement('button');
+    tabAdvanced.className = 'composer-tab';
+    tabAdvanced.textContent = '⚙ Advanced';
+    tabBar.appendChild(tabQuick);
+    tabBar.appendChild(tabAdvanced);
+
+    const quickPanel = document.createElement('div');
+    quickPanel.className = 'composer-panel';
+    const advancedPanel = document.createElement('div');
+    advancedPanel.className = 'composer-panel';
+    advancedPanel.style.display = 'none';
+
+    composerEl.appendChild(tabBar);
+    composerEl.appendChild(quickPanel);
+    composerEl.appendChild(advancedPanel);
+
+    // tab 切换
+    tabQuick.addEventListener('click', () => {
+      tabQuick.classList.add('active');
+      tabAdvanced.classList.remove('active');
+      quickPanel.style.display = '';
+      advancedPanel.style.display = 'none';
+    });
+    tabAdvanced.addEventListener('click', () => {
+      tabAdvanced.classList.add('active');
+      tabQuick.classList.remove('active');
+      advancedPanel.style.display = '';
+      quickPanel.style.display = 'none';
+    });
+
+    // Advanced = 现有 CommandComposer
+    composer = new CommandComposer(advancedPanel, {
+      onSubmit: async (payload) => {
+        const state = composer.getState();
+        const kind = payload.endpoint === '/api/runs' ? 'run'
+                   : payload.endpoint === '/api/jobs' ? 'job'
+                   : 'pipeline';
+        const agents = [...state.agents];
+        const prompt = state.prompt;
+        const mode = state.mode;
+        const response = await commandClient.submit(payload);
+        if (history) history.pushSubmission({ kind, mode, agents, prompt }, response);
+      },
+    });
+
+    // Quick = ArtifactComposer (artifacts 异步加载)
+    artifactComposer = new ArtifactComposer(quickPanel, {
+      onSubmit: async (payload) => {
+        const response = await commandClient.submit(payload);
+        const mode = payload.body?.mode || 'pipeline';
+        const agents = payload.body?.participants || (payload.body?.steps || []).map(s => s.agent);
+        const prompt = payload.body?.topic || (payload.body?.steps?.[0]?.prompt || '').slice(0, 80);
+        if (history) history.pushSubmission({ kind: 'pipeline', mode, agents, prompt }, response);
+      },
+    });
+
+    // 异步加载 artifacts.json
+    fetch('/pixel/artifacts.json')
+      .then(r => r.ok ? r.json() : [])
+      .then(data => artifactComposer.setArtifacts(data))
+      .catch(() => {});
+  }
 
   if (history) history.start();
 
@@ -317,6 +375,7 @@ async function main() {
     renderer.setConfig(cfg);
     sidebar.setAgents(lastAgents);
     if (composer) composer.setAvailableAgents(lastAgents);
+    if (artifactComposer) artifactComposer.setAvailableAgents(lastAgents);
 
     if (selectedName && !lastAgents.find(a => a.name === selectedName)) {
       setSelected(null);

@@ -1,0 +1,32 @@
+[
+  {
+    "id": "make-game",
+    "name": "🎮 做个游戏",
+    "description": "策划 → 实现 → 部署",
+    "mode": "sequence",
+    "steps": [
+      {
+        "agent": "harness",
+        "promptTemplate": "你是游戏策划师。用户想做的游戏: {{input}}。请输出完整的游戏策划文档，包含核心玩法、美术风格、技术方案（纯前端 HTML/JS/Canvas 单文件）。文档要足够详细让开发者能直接实现。"
+      },
+      {
+        "agent": "opengame",
+        "promptTemplate": "根据上一步的策划文档，实现这个游戏。要求: 纯前端单 HTML 文件, Canvas 渲染, 可直接浏览器打开。游戏名: {{input}}"
+      },
+      {
+        "agent": "kiro",
+        "promptTemplate": "将 /tmp/opengame/ 下生成的游戏文件部署到 S3 并刷新 CDN 缓存。游戏主题: {{input}}。执行步骤: 1) 找到生成的 HTML 文件 2) aws s3 cp 到 s3://opengame-demo-summit-2026/<name>/index.html 3) aws cloudfront create-invalidation 4) 报告访问 URL"
+      }
+    ]
+  },
+  {
+    "id": "brainstorm",
+    "name": "🧠 头脑风暴",
+    "description": "多 agent 对话讨论一个话题",
+    "mode": "conversation",
+    "agents": ["kiro", "claude", "hermes"],
+    "minAgents": 2,
+    "maxTurns": 6,
+    "promptTemplate": "{{input}}"
+  }
+]
