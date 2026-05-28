@@ -833,3 +833,333 @@ describe('HeartbeatView v2.17.0 — UX polish', () => {
     ]);
   });
 });
+
+// =============================================================================
+// v2.20.0 — HeartbeatView optimization bundle (B + A + C + D)
+// =============================================================================
+
+describe('HeartbeatView v2.20.0 — fetch timeout (B)', () => {
+  let container;
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    try { localStorage.clear(); } catch {}
+  });
+  afterEach(() => {
+    document.body.innerHTML = '';
+    try { localStorage.clear(); } catch {}
+    vi.useRealTimers();
+  });
+
+  it('B: timeout aborts hung fetch and surfaces error', async () => {
+    // 让 fetch 收到 abort signal 时手动 reject (模拟真实 AbortController 行为)
+    let abortReject;
+    const f = vi.fn((url, init) => new Promise((resolve, reject) => {
+      abortReject = reject;
+      if (init && init.signal) {
+        init.signal.addEventListener('abort', () => {
+          const e = new Error('aborted');
+          e.name = 'AbortError';
+          reject(e);
+        });
+      }
+    }));
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    const tickPromise = v.tickOnce();
+    // 等 5s timeout 触发 (用真实 timer, 但等够 6s 避免 vitest 默认 5s case timeout)
+    // 我们把 tick 视为非阻塞 — race 一个真实 setTimeout 跳过它
+    await Promise.race([
+      tickPromise,
+      new Promise(resolve => setTimeout(resolve, 5500)),
+    ]);
+    expect(v.getState().fetching).toBe(false);
+    expect(v.getState().lastError).toMatch(/timed out/);
+  }, 10000);  // 给这条测试 10s 上限
+
+  it('B: fast fetch within timeout still works', async () => {
+    const f = defaultMock();
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    await v.tickOnce();
+    await flush();
+    expect(v.getState().fetching).toBe(false);
+    expect(v.getState().lastError).toBeNull();
+    expect(v.getState().interval).toBe(60);
+  });
+
+  it('B: AbortError on the wire is normalized to "timed out" message', async () => {
+    const f = vi.fn(async () => { const e = new Error('aborted'); e.name = 'AbortError'; throw e; });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    await v.tickOnce();
+    expect(v.getState().lastError).toMatch(/timed out/);
+  });
+});
+
+describe('HeartbeatView v2.20.0 — Canvas bubble emit (C)', () => {
+  let container, onAgentOutput;
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    try { localStorage.clear(); } catch {}
+    onAgentOutput = vi.fn();
+  });
+  afterEach(() => {
+    document.body.innerHTML = '';
+    try { localStorage.clear(); } catch {}
+  });
+
+  it('C: first tick does NOT emit (history not replayed)', async () => {
+    const f = defaultMock();
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS, onAgentOutput });
+    await v.tickOnce();
+    await flush();
+    expect(onAgentOutput).not.toHaveBeenCalled();
+  });
+
+  it('C: second tick emits only newly-added non-silent logs', async () => {
+    let secondTick = false;
+    const f = makeFetch({
+      'GET /api/heartbeat':         async () => okResp(SAMPLE_STATE),
+      'GET /api/heartbeat/context': async () => okResp({ contexts: [] }),
+      'GET /api/heartbeat/logs':    async () => {
+        if (!secondTick) {
+          secondTick = true;
+          return okResp(SAMPLE_LOGS);
+        }
+        // 第二轮: 多了一条新 log
+        return okResp({
+          total: 4,
+          logs: [
+            { ts: NOW_MS / 1000 - 2, agent: 'kiro', silent: false, duration: 3.0,
+              response: 'fresh new chat', prompt_preview: 'You are kiro...' },
+            ...SAMPLE_LOGS.logs,
+          ],
+        });
+      },
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS, onAgentOutput });
+    await v.tickOnce();   // first — 不 emit
+    await flush();
+    expect(onAgentOutput).not.toHaveBeenCalled();
+    await v.tickOnce();   // second — 有新 log
+    await flush();
+    expect(onAgentOutput).toHaveBeenCalledTimes(1);
+    expect(onAgentOutput).toHaveBeenCalledWith('kiro', 'fresh new chat');
+  });
+
+  it('C: skips silent logs', async () => {
+    let secondTick = false;
+    const f = makeFetch({
+      'GET /api/heartbeat':         async () => okResp(SAMPLE_STATE),
+      'GET /api/heartbeat/context': async () => okResp({ contexts: [] }),
+      'GET /api/heartbeat/logs':    async () => {
+        if (!secondTick) { secondTick = true; return okResp({ total: 0, logs: [] }); }
+        return okResp({ total: 1, logs: [
+          { ts: NOW_MS / 1000, agent: 'kiro', silent: true, duration: 1.0, response: null },
+        ]});
+      },
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS, onAgentOutput });
+    await v.tickOnce();
+    await v.tickOnce();
+    await flush();
+    expect(onAgentOutput).not.toHaveBeenCalled();
+  });
+
+  it('C: skips _pinged logs (user just saw it via Intervene)', async () => {
+    const f = defaultMock({
+      'POST /api/heartbeat/claude': async () => okResp({
+        agent: 'claude', silent: false, response: 'hello', duration: 1.0,
+        snapshot: SAMPLE_STATE.snapshot, prompt_preview: 'p',
+      }),
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS, onAgentOutput });
+    await v.tickOnce();
+    await flush();
+    onAgentOutput.mockClear();
+    v.toggleIntervene();
+    v.setPingAgent('claude');
+    await v.pingAgent();
+    await flush();
+    // ping 不直接 emit (只通过 _pinged 标记); 下次 tickOnce 也跳过
+    await v.tickOnce();
+    await flush();
+    // pingAgent unshift 的 log 带 _pinged → 不 emit
+    const pingedRelatedCalls = onAgentOutput.mock.calls.filter(c => c[0] === 'claude');
+    expect(pingedRelatedCalls.length).toBe(0);
+  });
+
+  it('C: same log (same agent + ts) only emits once across ticks', async () => {
+    let tickN = 0;
+    const f = makeFetch({
+      'GET /api/heartbeat':         async () => okResp(SAMPLE_STATE),
+      'GET /api/heartbeat/context': async () => okResp({ contexts: [] }),
+      'GET /api/heartbeat/logs':    async () => {
+        tickN++;
+        if (tickN === 1) return okResp({ total: 0, logs: [] });
+        // 后续 N 次都返回同一条 log
+        return okResp({ total: 1, logs: [
+          { ts: NOW_MS / 1000 - 5, agent: 'kiro', silent: false, duration: 1.0, response: 'same' },
+        ]});
+      },
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS, onAgentOutput });
+    await v.tickOnce();
+    await v.tickOnce();
+    await v.tickOnce();
+    await v.tickOnce();
+    await flush();
+    expect(onAgentOutput).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('HeartbeatView v2.20.0 — agent filter (D1)', () => {
+  let container;
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    try { localStorage.clear(); } catch {}
+  });
+  afterEach(() => {
+    document.body.innerHTML = '';
+    try { localStorage.clear(); } catch {}
+  });
+
+  it('D1: renders chip per enabledAgent, all selected by default', async () => {
+    const f = defaultMock();
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    await v.tickOnce();
+    await flush();
+    const chips = [...container.querySelectorAll('.hb-agent-chip')];
+    expect(chips.length).toBe(3); // claude, kiro, qwen
+    chips.forEach(c => expect(c.classList.contains('hb-agent-chip-on')).toBe(true));
+  });
+
+  it('D1: toggle a chip filters that agent OUT of logs', async () => {
+    const f = defaultMock();
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    await v.tickOnce();
+    await flush();
+    // 初始: claude, qwen 卡片可见 (kiro silent 默认隐藏)
+    expect(container.querySelectorAll('.hb-card').length).toBe(2);
+    // toggle claude 离开
+    v.toggleAgentFilter('claude');
+    await flush();
+    const cards = [...container.querySelectorAll('.hb-card')];
+    const agents = cards.map(c => c.querySelector('.hb-card-agent').textContent);
+    expect(agents).not.toContain('claude');
+    expect(agents).toContain('qwen');
+  });
+
+  it('D1: localStorage persists filter selection', async () => {
+    const f = defaultMock();
+    const v1 = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    await v1.tickOnce();
+    await flush();
+    v1.toggleAgentFilter('claude'); // 取消 claude
+    expect(JSON.parse(localStorage.getItem('pixel.heartbeatSelectedAgents'))).toEqual(['kiro', 'qwen']);
+    // 重建实例验证持久化
+    const c2 = document.createElement('div');
+    document.body.appendChild(c2);
+    const v2 = new HeartbeatView(c2, { fetchImpl: f, nowMs: () => NOW_MS });
+    await v2.tickOnce();
+    await flush();
+    expect(v2.getState().selectedAgents).toBeInstanceOf(Set);
+    expect(v2.getState().selectedAgents.has('claude')).toBe(false);
+  });
+
+  it('D1: setAllAgentsSelected(true/false) bulk select/clear', async () => {
+    const f = defaultMock();
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    await v.tickOnce();
+    await flush();
+    v.setAllAgentsSelected(false);
+    expect(v.getState().selectedAgents.size).toBe(0);
+    expect(container.querySelectorAll('.hb-card').length).toBe(0);
+    expect(container.querySelector('.hb-empty').textContent).toMatch(/agent filter/);
+    v.setAllAgentsSelected(true);
+    expect(v.getState().selectedAgents.size).toBe(3);
+  });
+
+  it('D1: empty enabledAgents → filter row hidden', async () => {
+    const f = makeFetch({
+      'GET /api/heartbeat':         async () => okResp({ ...SAMPLE_STATE, enabled_agents: [] }),
+      'GET /api/heartbeat/logs':    async () => okResp({ total: 0, logs: [] }),
+      'GET /api/heartbeat/context': async () => okResp({ contexts: [] }),
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    await v.tickOnce();
+    await flush();
+    const wrap = container.querySelector('.hb-agent-filter');
+    expect(wrap.innerHTML).toBe('');
+  });
+});
+
+describe('HeartbeatView v2.20.0 — inject context marker (D2)', () => {
+  let container;
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    try { localStorage.clear(); } catch {}
+  });
+  afterEach(() => {
+    document.body.innerHTML = '';
+    try { localStorage.clear(); } catch {}
+  });
+
+  it('D2: log whose prompt_preview contains active context shows ✨ chip', async () => {
+    const f = makeFetch({
+      'GET /api/heartbeat':         async () => okResp(SAMPLE_STATE),
+      'GET /api/heartbeat/context': async () => okResp({ contexts: [
+        { text: 'demo starts at 2pm — say something fun', ttl: 3, created_at: NOW_MS / 1000 - 30 },
+      ]}),
+      'GET /api/heartbeat/logs':    async () => okResp({ total: 1, logs: [
+        { ts: NOW_MS / 1000 - 5, agent: 'claude', silent: false, duration: 4.2,
+          response: 'about the demo at 2pm...',
+          prompt_preview: 'You are claude. NOTE: demo starts at 2pm — say something fun ...' },
+      ]}),
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    await v.tickOnce();
+    await flush();
+    const card = container.querySelector('.hb-card');
+    const injected = card.querySelector('.hb-card-injected');
+    expect(injected).not.toBeNull();
+    expect(injected.textContent).toMatch(/context/);
+  });
+
+  it('D2: log without matching context does NOT show ✨ chip', async () => {
+    const f = makeFetch({
+      'GET /api/heartbeat':         async () => okResp(SAMPLE_STATE),
+      'GET /api/heartbeat/context': async () => okResp({ contexts: [] }),
+      'GET /api/heartbeat/logs':    async () => okResp({ total: 1, logs: [
+        { ts: NOW_MS / 1000 - 5, agent: 'claude', silent: false, duration: 4.2,
+          response: 'just chatting', prompt_preview: 'You are claude...' },
+      ]}),
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    await v.tickOnce();
+    await flush();
+    expect(container.querySelector('.hb-card-injected')).toBeNull();
+  });
+
+  it('D2: short context (<8 chars) does NOT trigger marker (avoid false positives)', async () => {
+    const f = makeFetch({
+      'GET /api/heartbeat':         async () => okResp(SAMPLE_STATE),
+      'GET /api/heartbeat/context': async () => okResp({ contexts: [
+        { text: 'hi', ttl: 3, created_at: NOW_MS / 1000 - 30 },
+      ]}),
+      'GET /api/heartbeat/logs':    async () => okResp({ total: 1, logs: [
+        { ts: NOW_MS / 1000 - 5, agent: 'claude', silent: false, duration: 4.2,
+          response: 'hi everyone', prompt_preview: 'You are claude. hi to you all.' },
+      ]}),
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    await v.tickOnce();
+    await flush();
+    expect(container.querySelector('.hb-card-injected')).toBeNull();
+  });
+});

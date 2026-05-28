@@ -1232,6 +1232,56 @@
       40% { background: #0c4a6e; box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.4); }
       100% { background: #1e293b; box-shadow: 0 0 0 0 rgba(56, 189, 248, 0); }
     }
+    /* v2.20.0 D1: agent filter chip row */
+    .hb-agent-filter {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+      font-size: 11px;
+    }
+    .hb-agent-filter:empty { display: none; }
+    .hb-agent-filter-label {
+      color: #64748b;
+      font-size: 10px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin-right: 2px;
+    }
+    .hb-agent-chip,
+    .hb-agent-all,
+    .hb-agent-none {
+      background: transparent;
+      border: 1px solid #334155;
+      color: #94a3b8;
+      border-radius: 10px;
+      padding: 2px 8px;
+      font-family: monospace;
+      font-size: 10px;
+      cursor: pointer;
+    }
+    .hb-agent-chip:hover,
+    .hb-agent-all:hover,
+    .hb-agent-none:hover { color: #e2e8f0; border-color: #475569; }
+    .hb-agent-chip-on { background: #1e293b; border-color: #60a5fa; color: #e2e8f0; }
+    .hb-agent-chip-off { opacity: 0.45; }
+    .hb-agent-all,
+    .hb-agent-none {
+      color: #cbd5e1;
+      letter-spacing: 0.05em;
+      margin-left: 4px;
+    }
+    /* v2.20.0 D2: inject context marker on log card */
+    .hb-card-injected {
+      background: #422006;
+      color: #fbbf24;
+      font-size: 9px;
+      padding: 1px 6px;
+      border-radius: 6px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+    }
     .hb-card-head {
       display: flex;
       align-items: center;

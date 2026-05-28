@@ -628,6 +628,37 @@ describe('PixelRenderer v2.6.0', () => {
       renderer.enqueueBubble('kiro', null);
       expect(renderer.agents[0].bubbleText).toBeNull();
     });
+
+    // v2.20.0: opts.duration support (was silently ignored before)
+    it('v2.20.0: opts.duration overrides default 4-6s lifetime', () => {
+      const before = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      renderer.enqueueBubble('kiro', 'short', { duration: 1500 });
+      const a = renderer.agents[0];
+      const lifetime = a.bubbleUntil - before;
+      expect(lifetime).toBeGreaterThanOrEqual(1490);
+      expect(lifetime).toBeLessThanOrEqual(1510);
+    });
+
+    it('v2.20.0: opts.duration of 10000 sets long-lived bubble', () => {
+      const before = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      renderer.enqueueBubble('kiro', 'long', { duration: 10000 });
+      const lifetime = renderer.agents[0].bubbleUntil - before;
+      expect(lifetime).toBeGreaterThanOrEqual(9990);
+      expect(lifetime).toBeLessThanOrEqual(10010);
+    });
+
+    it('v2.20.0: invalid opts.duration falls back to default 4-6s random', () => {
+      const before = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      renderer.enqueueBubble('kiro', 'fallback', { duration: -1 });
+      const lifetime = renderer.agents[0].bubbleUntil - before;
+      expect(lifetime).toBeGreaterThanOrEqual(3990);
+      expect(lifetime).toBeLessThanOrEqual(6010);
+    });
+
+    it('v2.20.0: opts undefined still works (backward compat)', () => {
+      expect(() => renderer.enqueueBubble('kiro', 'no opts')).not.toThrow();
+      expect(renderer.agents[0].bubbleText).toBe('no opts');
+    });
   });
 
   // === v2.10.0: busy emoji picker (替代 description) ===

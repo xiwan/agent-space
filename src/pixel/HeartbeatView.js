@@ -26,9 +26,13 @@
 const POLL_INTERVAL_MS = 10000;
 const SILENT_LS_KEY = 'pixel.heartbeatHideSilent';
 const INTERVENE_LS_KEY = 'pixel.heartbeatInterveneOpen';
+const SELECTED_AGENTS_LS_KEY = 'pixel.heartbeatSelectedAgents';  // v2.20.0 D
 const TTL_DEFAULT = 3;
 const TTL_MIN = 1;
 const TTL_MAX = 100;
+// v2.20.0 B: fetch timeout 配置
+const FETCH_TIMEOUT_MS_DEFAULT = 5000;     // tickOnce / changeInterval / inject / clear
+const FETCH_TIMEOUT_MS_PING = 30000;       // ping LLM 实测 7-15s, 留 2x buffer
 const INTERVAL_LABELS = {
   30: '30s',
   60: '1 min',
@@ -73,6 +77,7 @@ export class HeartbeatView {
    * @param {Function} [opts.fetchImpl]
    * @param {number} [opts.pollIntervalMs] 默认 10000
    * @param {Function} [opts.nowMs] 测试用
+   * @param {(name:string, text:string) => void} [opts.onAgentOutput] v2.20.0 C: 新 log → Canvas 气泡
    */
   constructor(container, opts = {}) {
     if (!container) throw new Error('HeartbeatView: container required');
@@ -80,6 +85,7 @@ export class HeartbeatView {
     this._fetch = opts.fetchImpl || (typeof fetch !== 'undefined' ? fetch.bind(globalThis) : null);
     this.pollIntervalMs = opts.pollIntervalMs ?? POLL_INTERVAL_MS;
     this._now = opts.nowMs || (() => Date.now());
+    this.onAgentOutput = opts.onAgentOutput || (() => {});  // v2.20.0 C
 
     let hideSilent = true;
     try {
@@ -94,6 +100,18 @@ export class HeartbeatView {
       if (typeof localStorage !== 'undefined') {
         const v = localStorage.getItem(INTERVENE_LS_KEY);
         if (v === 'true') interveneOpen = true;
+      }
+    } catch {}
+
+    // v2.20.0 D1: agent filter 持久化. null = 全选 (默认)
+    let selectedAgents = null;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const raw = localStorage.getItem(SELECTED_AGENTS_LS_KEY);
+        if (raw) {
+          const arr = JSON.parse(raw);
+          if (Array.isArray(arr)) selectedAgents = new Set(arr);
+        }
       }
     } catch {}
 
@@ -114,6 +132,7 @@ export class HeartbeatView {
       injectPending: false,            // v2.16.0
       clearPending: false,             // v2.16.0
       expandedPrompt: new Set(),       // log ts (string) 集合
+      selectedAgents,                  // v2.20.0 D1: Set<string> 或 null (全选)
       lastError: null,                 // logs / state / contexts 拉取错误
       intervalChange: null,            // {kind:'ok'|'error'|'pending', text} 一次性显示
       interveneStatus: null,           // v2.16.0: {kind, text} 一次性显示
@@ -125,8 +144,43 @@ export class HeartbeatView {
     this._progressTimer = null;
     this._pingedClearTimer = null;        // v2.17.0 #3
     this._countdownStartMs = null;        // v2.17.0 #1: 真实下次轮询的起点
+    this._shellMounted = false;           // v2.20.0 A
+    this._seenLogKeys = null;             // v2.20.0 C: null = 首次 tick (历史不回放)
 
     this._render();
+  }
+
+  /**
+   * v2.20.0 B: 包装 fetch 加 AbortController 超时.
+   * 超时 / 网络错误 → 抛 Error 让 caller 走 catch 路径; caller 一定会
+   * reset fetching=false (各 try/finally 里).
+   *
+   * 测试: 用 vi.useFakeTimers() + 永不 resolve 的 fetch mock + setTimeout 推进.
+   *
+   * @param {string} url
+   * @param {object} [opts] fetch init
+   * @param {number} [timeoutMs=FETCH_TIMEOUT_MS_DEFAULT]
+   */
+  async _fetchWithTimeout(url, opts = {}, timeoutMs = FETCH_TIMEOUT_MS_DEFAULT) {
+    if (!this._fetch) throw new Error('fetch unavailable');
+    const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    const init = ctrl ? { ...opts, signal: ctrl.signal } : opts;
+    let timer = null;
+    if (ctrl && timeoutMs > 0) {
+      timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    }
+    try {
+      return await this._fetch(url, init);
+    } catch (e) {
+      if (e && (e.name === 'AbortError' || /aborted/i.test(e.message || ''))) {
+        const method = (opts && opts.method) || 'GET';
+        const sec = (timeoutMs / 1000).toFixed(0);
+        throw new Error(`${method} ${url} timed out (${sec}s)`);
+      }
+      throw e;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   start() {
@@ -155,6 +209,54 @@ export class HeartbeatView {
   }
 
   /**
+   * v2.20.0 D1: toggle 一个 agent 的过滤选中态.
+   * 第一次调用时把 null (全选) 物化成 enabledAgents 全集, 再 toggle.
+   */
+  toggleAgentFilter(name) {
+    if (!name) return;
+    const enabled = this._state.enabledAgents || [];
+    if (this._state.selectedAgents === null) {
+      this._state.selectedAgents = new Set(enabled);
+    }
+    const sel = this._state.selectedAgents;
+    if (sel.has(name)) sel.delete(name);
+    else sel.add(name);
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(SELECTED_AGENTS_LS_KEY, JSON.stringify([...sel]));
+      }
+    } catch {}
+    this._renderControls();
+    this._renderLogs();
+  }
+
+  /**
+   * v2.20.0 D1: 一键全选 / 全清.
+   */
+  setAllAgentsSelected(allSelected) {
+    const enabled = this._state.enabledAgents || [];
+    this._state.selectedAgents = allSelected ? new Set(enabled) : new Set();
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(SELECTED_AGENTS_LS_KEY, JSON.stringify([...this._state.selectedAgents]));
+      }
+    } catch {}
+    this._renderControls();
+    this._renderLogs();
+  }
+
+  /**
+   * v2.20.0 D1: 判断 log 应否被 agent filter 过滤掉.
+   * selectedAgents = null → 全选 (不过滤)
+   * selectedAgents.has(log.agent) → 通过
+   */
+  _passesAgentFilter(log) {
+    const sel = this._state.selectedAgents;
+    if (sel === null) return true;
+    return sel.has(log.agent);
+  }
+
+  /**
    * 拉一次 /heartbeat + /heartbeat/logs + /heartbeat/context (并行).
    */
   async tickOnce() {
@@ -167,9 +269,9 @@ export class HeartbeatView {
     let firstError = null;
     try {
       const [stateR, logsR, ctxR] = await Promise.allSettled([
-        this._fetch('/api/heartbeat'),
-        this._fetch('/api/heartbeat/logs'),
-        this._fetch('/api/heartbeat/context'),
+        this._fetchWithTimeout('/api/heartbeat'),
+        this._fetchWithTimeout('/api/heartbeat/logs'),
+        this._fetchWithTimeout('/api/heartbeat/context'),
       ]);
       // /heartbeat
       if (stateR.status === 'fulfilled') {
@@ -219,11 +321,41 @@ export class HeartbeatView {
       // 任一成功就算 lastFetchedAt 更新
       if (stateOk || logsOk || ctxOk) this._state.lastFetchedAt = this._now();
       this._state.lastError = (stateOk && logsOk && ctxOk) ? null : firstError;
+      // v2.20.0 C: 把新 log 推到 Canvas bubble (跳过首次 tick / silent / pinged)
+      if (logsOk) this._emitNewLogBubbles();
       // v2.17.0 #1: 在 _render 之前设新的 countdown 起点, 让 _resumeCountdown 拿到
       this._countdownStartMs = this._now();
       this._render();
       this._resumeCountdown();
     }
+  }
+
+  /**
+   * v2.20.0 C: 比较新旧 logs, 把新 non-silent / non-pinged log 推到 Canvas bubble.
+   *
+   * 规则:
+   *   - 首次 tick (this._seenLogKeys === null): 不推, 只填 seen set
+   *     (避免历史回放成漩涡)
+   *   - 后续 tick: 用 (agent | ts.toFixed(3)) 复合 key 检测新增 log
+   *   - 跳过 silent (response = null)
+   *   - 跳过 _pinged (用户主动 ping 触发的, 已经在 Intervene 区显示了)
+   */
+  _emitNewLogBubbles() {
+    const logs = this._state.logs || [];
+    const isFirstTick = this._seenLogKeys === null;
+    const newSeen = new Set();
+    for (const log of logs) {
+      const key = (log.agent || '') + '|' + Number(log.ts).toFixed(3);
+      newSeen.add(key);
+      if (isFirstTick) continue;
+      if (this._seenLogKeys.has(key)) continue;     // 已 emit 过
+      if (log.silent) continue;                     // silent log 没内容
+      if (log._pinged) continue;                    // ping 触发的, 跳过避免重复
+      const text = String(log.response || '').trim();
+      if (!text || !log.agent) continue;
+      try { this.onAgentOutput(log.agent, text); } catch {}
+    }
+    this._seenLogKeys = newSeen;
   }
 
   /**
@@ -237,7 +369,7 @@ export class HeartbeatView {
     this._state.intervalChange = { kind: 'pending', text: `setting interval to ${formatIntervalLabel(seconds)}…` };
     this._render();
     try {
-      const r = await this._fetch('/api/heartbeat/interval', {
+      const r = await this._fetchWithTimeout('/api/heartbeat/interval', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ interval: seconds }),
@@ -306,7 +438,7 @@ export class HeartbeatView {
     this._state.interveneStatus = { kind: 'pending', text: `injecting (ttl ${ttl})…` };
     this._render();
     try {
-      const r = await this._fetch('/api/heartbeat/context', {
+      const r = await this._fetchWithTimeout('/api/heartbeat/context', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, ttl }),
@@ -354,7 +486,7 @@ export class HeartbeatView {
     this._state.interveneStatus = { kind: 'pending', text: 'clearing…' };
     this._render();
     try {
-      const r = await this._fetch('/api/heartbeat/context', { method: 'DELETE' });
+      const r = await this._fetchWithTimeout('/api/heartbeat/context', { method: 'DELETE' });
       let body = null;
       try { body = await r.json(); } catch {}
       if (!r || !r.ok) {
@@ -390,11 +522,11 @@ export class HeartbeatView {
     this._state.interveneStatus = { kind: 'pending', text: `pinging ${target}…` };
     this._render();
     try {
-      const r = await this._fetch(`/api/heartbeat/${encodeURIComponent(target)}`, {
+      const r = await this._fetchWithTimeout(`/api/heartbeat/${encodeURIComponent(target)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
-      });
+      }, FETCH_TIMEOUT_MS_PING);
       let body = null;
       try { body = await r.json(); } catch {}
       if (!r || !r.ok || !body || body.error) {
@@ -485,50 +617,47 @@ export class HeartbeatView {
   // ============================================================
 
   _render() {
-    const focusInfo = this._captureFocus();
-    const { interval, allowedIntervals, lastError, fetching, lastFetchedAt } = this._state;
+    // v2.20.0 A: 第一次构造 shell, 后续仅调度子 render
+    if (!this._shellMounted) {
+      this._mountShell();
+      this._shellMounted = true;
+    }
+    // 全量子 render — 谁触发的不重要, slot 内局部更新, 不再销毁 select/textarea/进度条
+    this._renderControls();
+    this._renderIntervalChange();
+    this._renderIntervene();
+    this._renderError();
+    this._renderLogs();
+    this._resumeCountdown();
+  }
 
-    const intervals = (allowedIntervals && allowedIntervals.length)
-      ? allowedIntervals
-      : (interval ? [interval] : []);
-    const intervalOpts = intervals.map(s =>
-      `<option value="${s}"${s === interval ? ' selected' : ''}>${formatIntervalLabel(s)}</option>`
-    ).join('');
-
-    const fetchedText = fetching
-      ? 'fetching…'
-      : lastFetchedAt
-        ? `updated ${formatRelTs(lastFetchedAt / 1000, this._now())}`
-        : '';
-
-    const errBlock = lastError
-      ? `<div class="hb-error">${escapeHtml(lastError)}</div>`
-      : '';
-
+  /**
+   * v2.20.0 A: 一次性挂 shell 结构 (slot 容器). 控件本身保持不被销毁,
+   * 后续子 render 用 slot 内 innerHTML 局部更新.
+   */
+  _mountShell() {
     this.container.innerHTML = `
       <div class="hb-controls">
         <label class="hb-interval-label">interval</label>
-        <select class="hb-interval-select"${intervalOpts ? '' : ' disabled'}>
-          ${intervalOpts || '<option>—</option>'}
+        <select class="hb-interval-select" disabled>
+          <option>—</option>
         </select>
         <label class="hb-silent-toggle">
-          <input type="checkbox" class="hb-hide-silent"${this._state.hideSilent ? ' checked' : ''}>
+          <input type="checkbox" class="hb-hide-silent">
           <span>hide silent</span>
         </label>
-        <button class="hb-refresh" type="button" title="Refresh now"${fetching ? ' disabled' : ''}>${fetching ? '…' : '↻'}</button>
-        <span class="hb-fetched">${fetchedText}</span>
+        <button class="hb-refresh" type="button" title="Refresh now">↻</button>
+        <span class="hb-fetched"></span>
       </div>
+      <div class="hb-agent-filter"></div>
       <div class="hb-progress"><div class="hb-progress-bar"></div></div>
-      ${this._renderIntervalChange()}
-      ${this._renderIntervene()}
-      ${errBlock}
+      <div class="hb-intervalChange-slot"></div>
+      <div class="hb-intervene-slot"></div>
+      <div class="hb-error-slot"></div>
       <div class="hb-logs"></div>
     `;
+    // controls 监听只绑一次
     this._wireControls();
-    this._wireIntervene();
-    this._renderLogs();
-    this._resumeCountdown();
-    this._restoreFocus(focusInfo);
   }
 
   /**
@@ -558,41 +687,146 @@ export class HeartbeatView {
     } catch {}
   }
 
+  /**
+   * v2.20.0 A: 局部更新 controls — 不再销毁 select / checkbox / button,
+   * 只更新它们的属性 / value / textContent.
+   */
   _renderControls() {
     const ctrls = this.container.querySelector('.hb-controls');
     if (!ctrls) { this._render(); return; }
+    const { interval, allowedIntervals, fetching, lastFetchedAt, hideSilent } = this._state;
+
+    // interval select: 重建 options (不重建 select 本身)
+    const sel = ctrls.querySelector('.hb-interval-select');
+    if (sel) {
+      const intervals = (allowedIntervals && allowedIntervals.length)
+        ? allowedIntervals
+        : (interval ? [interval] : []);
+      const sigKey = intervals.join(',') + ':' + (interval ?? '');
+      if (sel._sigKey !== sigKey) {
+        // options 实际有变化才重建
+        sel.innerHTML = intervals.length
+          ? intervals.map(s => `<option value="${s}"${s === interval ? ' selected' : ''}>${formatIntervalLabel(s)}</option>`).join('')
+          : '<option>—</option>';
+        sel._sigKey = sigKey;
+      }
+      sel.disabled = intervals.length === 0;
+      if (interval != null) sel.value = String(interval);
+    }
+
+    // hideSilent checkbox
+    const cb = ctrls.querySelector('.hb-hide-silent');
+    if (cb) cb.checked = !!hideSilent;
+
+    // refresh button
     const refreshBtn = ctrls.querySelector('.hb-refresh');
     if (refreshBtn) {
-      refreshBtn.disabled = this._state.fetching;
-      refreshBtn.textContent = this._state.fetching ? '…' : '↻';
+      refreshBtn.disabled = fetching;
+      refreshBtn.textContent = fetching ? '…' : '↻';
     }
+
+    // fetched span
     const fetchedSpan = ctrls.querySelector('.hb-fetched');
     if (fetchedSpan) {
-      fetchedSpan.textContent = this._state.fetching
+      fetchedSpan.textContent = fetching
         ? 'fetching…'
-        : (this._state.lastFetchedAt ? `updated ${formatRelTs(this._state.lastFetchedAt / 1000, this._now())}` : '');
+        : (lastFetchedAt ? `updated ${formatRelTs(lastFetchedAt / 1000, this._now())}` : '');
     }
-    // interval-change 状态条: 整体 _render 会重渲一次, 这里只负责 fetching 期间的小更新.
+
+    // v2.20.0 D1: agent filter chip row
+    this._renderAgentFilter();
   }
 
+  /**
+   * v2.20.0 D1: 渲染 agent filter chip 区. 每个 enabled agent 一个 chip,
+   * 点击 toggle 选中态. 末尾两个一键全选/全清按钮.
+   */
+  _renderAgentFilter() {
+    const wrap = this.container.querySelector('.hb-agent-filter');
+    if (!wrap) return;
+    const enabled = this._state.enabledAgents || [];
+    if (enabled.length === 0) {
+      wrap.innerHTML = '';
+      return;
+    }
+    const sel = this._state.selectedAgents;
+    const isSelected = (a) => sel === null ? true : sel.has(a);
+    const totalSelected = sel === null ? enabled.length : enabled.filter(a => sel.has(a)).length;
+    const sigKey = enabled.join(',') + ':' + (sel === null ? 'all' : [...sel].sort().join(','));
+    if (wrap._sigKey === sigKey) return; // 无变化跳过
+    wrap._sigKey = sigKey;
+
+    const chips = enabled.map(a => {
+      const cls = isSelected(a) ? 'hb-agent-chip hb-agent-chip-on' : 'hb-agent-chip hb-agent-chip-off';
+      return `<button type="button" class="${cls}" data-agent="${escapeAttr(a)}">${escapeHtml(a)}</button>`;
+    }).join('');
+    const allBtn = totalSelected < enabled.length
+      ? `<button type="button" class="hb-agent-all" data-action="all">all</button>`
+      : `<button type="button" class="hb-agent-none" data-action="none">none</button>`;
+    wrap.innerHTML = `
+      <span class="hb-agent-filter-label">filter:</span>
+      ${chips}
+      ${allBtn}
+    `;
+    // 绑事件 (chip 数量随 enabled 变化, 每次重渲 → 重新绑)
+    wrap.querySelectorAll('[data-agent]').forEach(btn => {
+      btn.addEventListener('click', () => this.toggleAgentFilter(btn.dataset.agent));
+    });
+    const actionBtn = wrap.querySelector('[data-action]');
+    if (actionBtn) {
+      actionBtn.addEventListener('click', () => {
+        this.setAllAgentsSelected(actionBtn.dataset.action === 'all');
+      });
+    }
+  }
+
+  /**
+   * v2.20.0 A: 局部更新 intervalChange slot — 不再嵌入 _render 的 innerHTML.
+   */
   _renderIntervalChange() {
+    const slot = this.container.querySelector('.hb-intervalChange-slot');
+    if (!slot) return;
     const ic = this._state.intervalChange;
-    if (!ic) return '';
+    if (!ic) { slot.innerHTML = ''; return; }
     const cls = ic.kind === 'ok' ? 'hb-interval-change hb-interval-ok'
               : ic.kind === 'error' ? 'hb-interval-change hb-interval-error'
               : 'hb-interval-change hb-interval-pending';
-    return `<div class="${cls}">${escapeHtml(ic.text)}</div>`;
+    slot.innerHTML = `<div class="${cls}">${escapeHtml(ic.text)}</div>`;
+  }
+
+  /**
+   * v2.20.0 A: 局部更新 error slot — 替代旧 _render 内嵌的 errBlock.
+   */
+  _renderError() {
+    const slot = this.container.querySelector('.hb-error-slot');
+    if (!slot) return;
+    const { lastError } = this._state;
+    slot.innerHTML = lastError ? `<div class="hb-error">${escapeHtml(lastError)}</div>` : '';
   }
 
   // ============================================================
   // v2.16.0: Intervene render
   // ============================================================
 
+  /**
+   * v2.20.0 A: 局部更新 intervene slot — 替代旧返回字符串的方式.
+   * 注意: textarea / select / button 仍每次重建, 因为 intervene 状态变化
+   * 多 (open/close/textValue/pending), 全部 partial 更新的 ROI 不高;
+   * 但 textarea 焦点保持靠 _captureFocus/_restoreFocus 在 _renderIntervene
+   * 入口/出口处理.
+   */
   _renderIntervene() {
+    const slot = this.container.querySelector('.hb-intervene-slot');
+    if (!slot) return;
+    const focusInfo = this._captureFocus();
     const open = this._state.interveneOpen;
     const arrow = open ? '▾' : '▸';
     const head = `<div class="hb-intervene-toggle" data-toggle="intervene">${arrow} Intervene</div>`;
-    if (!open) return `<div class="hb-intervene">${head}</div>`;
+    if (!open) {
+      slot.innerHTML = `<div class="hb-intervene">${head}</div>`;
+      this._wireIntervene();
+      return;
+    }
 
     const enabled = this._state.enabledAgents || [];
     const pingTarget = this._state.pingAgent || enabled[0] || '';
@@ -639,7 +873,9 @@ export class HeartbeatView {
         ${status}
       </div>
     `;
-    return `<div class="hb-intervene hb-intervene-open">${head}${body}</div>`;
+    slot.innerHTML = `<div class="hb-intervene hb-intervene-open">${head}${body}</div>`;
+    this._wireIntervene();
+    this._restoreFocus(focusInfo);
   }
 
   _renderInterveneStatus() {
@@ -701,6 +937,7 @@ export class HeartbeatView {
     const { logs, hideSilent, snapshot } = this._state;
     const filtered = (logs || [])
       .filter(l => !hideSilent || !l.silent)
+      .filter(l => this._passesAgentFilter(l))   // v2.20.0 D1
       .slice() // 不污染原数组
       .sort((a, b) => (b.ts || 0) - (a.ts || 0));
 
@@ -709,10 +946,27 @@ export class HeartbeatView {
     this._pruneExpandedPrompt(filtered);
 
     if (filtered.length === 0) {
-      const totalNote = (logs && logs.length)
-        ? `${logs.length} silent log${logs.length === 1 ? '' : 's'} hidden`
-        : 'no heartbeat logs yet';
-      wrap.innerHTML = `<div class="hb-empty">${totalNote}</div>`;
+      // v2.20.0 D1: 区分原因 (silent hidden / agent filter / 真没数据)
+      const total = logs ? logs.length : 0;
+      let totalNote;
+      if (total === 0) {
+        totalNote = 'no heartbeat logs yet';
+      } else {
+        const sel = this._state.selectedAgents;
+        if (sel !== null && sel.size === 0) {
+          totalNote = `${total} log${total === 1 ? '' : 's'} hidden by agent filter (none selected)`;
+        } else if (sel !== null) {
+          const filteredOut = logs.filter(l => !this._passesAgentFilter(l)).length;
+          if (filteredOut === total) {
+            totalNote = `${total} log${total === 1 ? '' : 's'} hidden by agent filter`;
+          } else {
+            totalNote = `${total} silent log${total === 1 ? '' : 's'} hidden`;
+          }
+        } else {
+          totalNote = `${total} silent log${total === 1 ? '' : 's'} hidden`;
+        }
+      }
+      wrap.innerHTML = `<div class="hb-empty">${escapeHtml(totalNote)}</div>`;
       return;
     }
 
@@ -763,6 +1017,10 @@ export class HeartbeatView {
     const ago = formatRelTs(log.ts, now ?? this._now());
     const dur = formatDur(log.duration);
     const stateChip = this._chipForAgent(log.agent, snapshot);
+    // v2.20.0 D2: inject context marker — log.prompt_preview 含某条活 context 文本则显 ✨
+    const injectedChip = this._isInjectInfluenced(log)
+      ? '<span class="hb-card-injected" title="response was influenced by injected context">✨ context</span>'
+      : '';
     const respBlock = log.silent
       ? `<div class="hb-card-body hb-silent">[silent]</div>`
       : `<div class="hb-card-body">${escapeHtml(String(log.response ?? ''))}</div>`;
@@ -778,6 +1036,7 @@ export class HeartbeatView {
         <div class="hb-card-head">
           <span class="hb-card-agent">${escapeHtml(log.agent || '?')}</span>
           ${stateChip}
+          ${injectedChip}
           <span class="hb-card-ago">${escapeHtml(ago)}</span>
           <span class="hb-card-dur">${escapeHtml(dur)}</span>
         </div>
@@ -786,6 +1045,24 @@ export class HeartbeatView {
         ${promptBody}
       </div>
     `;
+  }
+
+  /**
+   * v2.20.0 D2: log.prompt_preview 是否含当前活 context 的 text (substring 匹配).
+   * 注: substring 匹配会有误报 (agent 自然说出 context 词条), 接受此 risk;
+   * context 通常是指令性长句, 误报概率低.
+   */
+  _isInjectInfluenced(log) {
+    const preview = log && log.prompt_preview;
+    if (!preview) return false;
+    const ctxs = this._state.contexts || [];
+    if (ctxs.length === 0) return false;
+    for (const c of ctxs) {
+      const text = (c && c.text) ? String(c.text).trim() : '';
+      // 至少 8 字符的 context 才参与匹配 (避免 'hi' / 'ok' 这种短词大量误报)
+      if (text.length >= 8 && preview.includes(text)) return true;
+    }
+    return false;
   }
 
   _chipForAgent(agentName, snapshot) {

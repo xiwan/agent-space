@@ -190,8 +190,13 @@ async function main() {
   if (usage) usage.start();
 
   // === v2.15.0: Heartbeat tab ===
+  // v2.20.0 C: heartbeat log → Canvas bubble 联动 (复用 history 的 enqueueBubble 入口)
   const heartbeatContainer = sidebar.getHeartbeatContainer();
-  const heartbeat = heartbeatContainer ? new HeartbeatView(heartbeatContainer) : null;
+  const heartbeat = heartbeatContainer ? new HeartbeatView(heartbeatContainer, {
+    onAgentOutput: (name, text) => {
+      if (name && text) renderer.enqueueBubble(name, text);
+    },
+  }) : null;
   if (heartbeat) heartbeat.start();
 
   const editor = (editBtnEl && editToolbarEl) ? new MapEditor(canvas, editToolbarEl, {

@@ -623,16 +623,23 @@ export class PixelRenderer {
    * 4-6 秒寿命 (略长于 idle chitchat 的 3-5s, 让用户能看清 agent 输出).
    * 气泡到期后正常恢复 idle/busy 词库循环.
    *
+   * v2.20.0: 加 opts.duration 让 caller 控制气泡显示时长 (默认随机 4-6s).
+   *
    * @param {string} name
-   * @param {string} text — 全文; 渲染端会按 v2.7.0 规则截断 24 字符
+   * @param {string} text — 全文; 渲染端按 v2.16.2 wrapBubbleText 多行换行 (<=500 字)
+   * @param {object} [opts]
+   * @param {number} [opts.duration] 显示毫秒数 (默认 4000-6000 随机)
    */
-  enqueueBubble(name, text) {
+  enqueueBubble(name, text, opts = {}) {
     const a = this.agents.find(x => x.name === name);
     if (!a) return;
     if (!text) return;
     const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     a.bubbleText = String(text);
-    a.bubbleUntil = now + 4000 + Math.random() * 2000; // 4-6s
+    const duration = (opts && Number.isFinite(opts.duration) && opts.duration > 0)
+      ? opts.duration
+      : (4000 + Math.random() * 2000); // 默认 4-6s
+    a.bubbleUntil = now + duration;
     // 让冷却从此刻起正常算 (避免立刻被新 chitchat 抢)
     a.bubbleNextAt = a.bubbleUntil + 1500;
   }
