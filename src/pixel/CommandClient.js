@@ -65,6 +65,36 @@ export class CommandClient {
     return this._get(`/api/pipelines/${encodeURIComponent(pipelineId)}`);
   }
 
+  /**
+   * v2.14: 流式中间内容查询 — running/pending 状态时拿 partial content,
+   * completed/failed 时拿最终内容. 通过 parts_count 增长判断是否有新内容.
+   * 返回: { job_id, agent, status, content, parts_count }
+   */
+  async pollJobLive(jobId) {
+    if (!jobId) throw new Error('pollJobLive: jobId required');
+    return this._get(`/api/jobs/${encodeURIComponent(jobId)}/live`);
+  }
+
+  /**
+   * v2.14: pipeline step 的流式查询.
+   * 返回: { job_id, agent, status, content, parts_count, step }
+   */
+  async pollPipelineStepLive(pipelineId, stepIndex) {
+    if (!pipelineId) throw new Error('pollPipelineStepLive: pipelineId required');
+    if (typeof stepIndex !== 'number' || stepIndex < 0) throw new Error('pollPipelineStepLive: stepIndex required');
+    return this._get(`/api/pipelines/${encodeURIComponent(pipelineId)}/steps/${stepIndex}/live`);
+  }
+
+  async cancelPipeline(pipelineId) {
+    if (!pipelineId) throw new Error('cancelPipeline: pipelineId required');
+    return this._post(`/api/pipelines/${encodeURIComponent(pipelineId)}/cancel`, {});
+  }
+
+  async cancelJob(jobId) {
+    if (!jobId) throw new Error('cancelJob: jobId required');
+    return this._post(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {});
+  }
+
   // ===== private =====
 
   async _post(url, body) {

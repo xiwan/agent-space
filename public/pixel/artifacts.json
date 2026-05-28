@@ -2,20 +2,24 @@
   {
     "id": "make-game",
     "name": "🎮 做个游戏",
-    "description": "策划 → 实现 → 部署",
+    "description": "Prompt 工程 → 实现 → 部署",
     "mode": "sequence",
+    "context": {"shared_cwd": "/tmp/opengame-{{uid}}"},
     "steps": [
       {
         "agent": "harness",
-        "promptTemplate": "你是游戏策划师。用户想做的游戏: {{input}}。请输出完整的游戏策划文档，包含核心玩法、美术风格、技术方案（纯前端 HTML/JS/Canvas 单文件）。文档要足够详细让开发者能直接实现。"
+        "promptTemplate": "你是游戏 prompt 工程师。\n用户想法是：{{input}}\n\n生成游戏设计文档，保存为 gdd.md，按以下顺序写：\n\n1. 游戏类型：选一个成熟品类作为锚定，例如 top-down racing、breakout、falling-block puzzle、side-scrolling platformer、arcade shooter、endless runner、tower defense。避免把多个互斥机制并列。如果用户想法跨品类，把次要机制定位为主玩法的修饰或触发条件。\n\n2. 核心循环：用一句话说清玩家每一秒做什么。\n\n3. 视觉风格：明确画风锚点，例如 90 年代 SNES 像素风、neon synthwave、Out Run sunset palette。\n\n4. 控制方式：列出键盘鼠标触屏的具体键位映射。\n\n5. 游戏要素：障碍种类、道具种类、得分规则、胜负条件，用具体名词写出来。\n\n6. 视觉细节：1 到 2 个让游戏更生动的细节，例如粒子效果、屏幕震动、连击计数。\n\n直接输出到 gdd.md，不要做额外解释。",
+        "artifact": {"type": "file", "label": "GDD", "pattern": "gdd.md"}
       },
       {
         "agent": "opengame",
-        "promptTemplate": "根据上一步的策划文档，实现这个游戏。要求: 纯前端单 HTML 文件, Canvas 渲染, 可直接浏览器打开。游戏名: {{input}}"
+        "promptTemplate": "读取当前目录下的 gdd.md，按其中描述实现游戏。\n\n输出文件：game.html\n技术约束：单 HTML 文件，纯 vanilla JS 加 Canvas，不使用任何外部库，浏览器直接打开即可玩。\n\n直接开始写代码，不要再做需求分析或方案讨论。",
+        "artifact": {"type": "file", "label": "游戏文件", "pattern": "game.html"}
       },
       {
         "agent": "kiro",
-        "promptTemplate": "将 /tmp/opengame/ 下生成的游戏文件部署到 S3 并刷新 CDN 缓存。游戏主题: {{input}}。执行步骤: 1) 找到生成的 HTML 文件 2) aws s3 cp 到 s3://opengame-demo-summit-2026/<name>/index.html 3) aws cloudfront create-invalidation 4) 报告访问 URL"
+        "promptTemplate": "将当前目录下的 game.html 部署到 S3 并刷新 CDN 缓存。游戏 ID：{{uid}}。\n\n执行：\n1. aws s3 cp game.html s3://opengame-demo-summit-2026/{{uid}}/index.html --content-type text/html --region us-east-1\n2. aws cloudfront create-invalidation --distribution-id E3MU4MKLH39XO9 --paths /{{uid}}/*\n3. 报告访问地址 https://d1x0y8igxbg2j0.cloudfront.net/{{uid}}/",
+        "artifact": {"type": "url", "label": "URL", "pattern": "https://d1x0y8igxbg2j0.cloudfront.net"}
       }
     ]
   },

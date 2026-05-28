@@ -86,3 +86,87 @@ describe('buildArtifactPayload', () => {
     expect(p.body.steps[0].prompt).toBe('go');
   });
 });
+
+// =============================================================================
+// v2.19.0: {{uid}} + context + _artifacts (from stashed v2.14.2-WIP)
+// =============================================================================
+
+describe('v2.19.0: renderTemplate {{uid}} support', () => {
+  it('replaces {{uid}} alongside {{input}}', () => {
+    expect(renderTemplate('use {{input}} in {{uid}}', 'snake', 'abc12345'))
+      .toBe('use snake in abc12345');
+  });
+
+  it('replaces multiple {{uid}} occurrences', () => {
+    expect(renderTemplate('{{uid}} and {{uid}}', '', 'xx'))
+      .toBe('xx and xx');
+  });
+});
+
+describe('v2.19.0: buildArtifactPayload {{uid}} + context + _artifacts', () => {
+  const makeGameArtifact = {
+    id: 'make-game',
+    mode: 'sequence',
+    context: { shared_cwd: '/tmp/opengame-{{uid}}' },
+    steps: [
+      { agent: 'harness', promptTemplate: 'plan {{input}}', artifact: { type: 'file', label: 'GDD', pattern: 'gdd.md' } },
+      { agent: 'opengame', promptTemplate: 'build', artifact: { type: 'file', label: '游戏', pattern: 'game.html' } },
+      { agent: 'kiro', promptTemplate: 'deploy {{uid}}', artifact: { type: 'url', label: 'URL', pattern: 'https://d1x0' } },
+    ],
+  };
+
+  it('generates 8-char hex uid and uses it in steps + context', () => {
+    const p = buildArtifactPayload(makeGameArtifact, 'racing game');
+    // step 3 has {{uid}} in template
+    const deployPrompt = p.body.steps[2].prompt;
+    expect(deployPrompt).toMatch(/^deploy [0-9a-f]{1,8}$/);
+    // context.shared_cwd has uid filled
+    expect(p.body.context.shared_cwd).toMatch(/^\/tmp\/opengame-[0-9a-f]{1,8}$/);
+    // same uid across steps + context
+    const uid = deployPrompt.replace(/^deploy /, '');
+    expect(p.body.context.shared_cwd).toBe(`/tmp/opengame-${uid}`);
+  });
+
+  it('exposes per-step artifact metadata via _artifacts', () => {
+    const p = buildArtifactPayload(makeGameArtifact, 'snake');
+    expect(p._artifacts).toHaveLength(3);
+    expect(p._artifacts[0]).toEqual({ type: 'file', label: 'GDD', pattern: 'gdd.md' });
+    expect(p._artifacts[1].pattern).toBe('game.html');
+    expect(p._artifacts[2].type).toBe('url');
+  });
+
+  it('skips context if artifact has none', () => {
+    const noContext = {
+      id: 'plain', mode: 'sequence',
+      steps: [{ agent: 'a', promptTemplate: '{{input}}' }],
+    };
+    const p = buildArtifactPayload(noContext, 'hi');
+    expect(p.body.context).toBeUndefined();
+  });
+
+  it('renders non-string context values as-is', () => {
+    const art = {
+      id: 'mixed', mode: 'sequence',
+      context: { shared_cwd: '/tmp/{{uid}}', timeout: 300, debug: true },
+      steps: [{ agent: 'a', promptTemplate: '{{input}}' }],
+    };
+    const p = buildArtifactPayload(art, 'x');
+    expect(p.body.context.shared_cwd).toMatch(/^\/tmp\/[0-9a-f]+$/);
+    expect(p.body.context.timeout).toBe(300);
+    expect(p.body.context.debug).toBe(true);
+  });
+
+  it('_artifacts is null-padded for steps without artifact field', () => {
+    const art = {
+      id: 'mixed', mode: 'sequence',
+      steps: [
+        { agent: 'a', promptTemplate: '{{input}}', artifact: { type: 'url', label: 'L', pattern: 'P' } },
+        { agent: 'b', promptTemplate: '{{input}}' },  // no artifact
+      ],
+    };
+    const p = buildArtifactPayload(art, 'x');
+    expect(p._artifacts).toHaveLength(2);
+    expect(p._artifacts[0].type).toBe('url');
+    expect(p._artifacts[1]).toBeNull();
+  });
+});

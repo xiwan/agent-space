@@ -1,11 +1,16 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { CommandHistory, normalizeStatus, extractAgentBubbles, extractDisplayText, extractPipelineMetadata, truncateRecordForStorage, loadRecordsFromStorage, saveRecordsToStorage, clearStorage } from '../src/pixel/CommandHistory.js';
 
 function mkClient(over = {}) {
   return {
     pollJob: over.pollJob || vi.fn().mockResolvedValue({ status: 'running' }),
     pollPipeline: over.pollPipeline || vi.fn().mockResolvedValue({ status: 'running' }),
+    // v2.19.0: 4 个新 endpoint, 默认 noop
+    pollJobLive: over.pollJobLive || vi.fn().mockResolvedValue({ content: '', parts_count: 0 }),
+    pollPipelineStepLive: over.pollPipelineStepLive || vi.fn().mockResolvedValue({ content: '', parts_count: 0 }),
+    cancelPipeline: over.cancelPipeline || vi.fn().mockResolvedValue({ status: 'cancelled' }),
+    cancelJob: over.cancelJob || vi.fn().mockResolvedValue({ status: 'cancelled' }),
   };
 }
 
@@ -47,10 +52,10 @@ describe('CommandHistory.extractAgentBubbles', () => {
     ]);
   });
 
-  it('truncates long output to 200 chars', () => {
+  it('truncates long output to 140 chars', () => {
     const long = 'x'.repeat(500);
     const out = extractAgentBubbles({ output: long }, 'job');
-    expect(out[0].text.length).toBe(200);
+    expect(out[0].text.length).toBe(140);
   });
 });
 
@@ -254,11 +259,13 @@ describe('CommandHistory.extractDisplayText (v2.11.0)', () => {
     expect(extractDisplayText({ steps: [] }, 'pipeline').hasContent).toBe(false);
   });
 
-  it('pipeline + steps where step has no text → skipped', () => {
+  it('pipeline + steps where step has no text → shows status placeholder', () => {
     const d = extractDisplayText({
       steps: [{ agent: 'a' }, { agent: 'b', output: 'B' }],
     }, 'pipeline');
-    expect(d.turns).toEqual([{ agent: 'b', text: 'B' }]);
+    expect(d.turns.length).toBe(2);
+    expect(d.turns[0].agent).toBe('a');
+    expect(d.turns[1]).toEqual({ agent: 'b', text: 'B' });
   });
 
   it('conversation: response.turns preferred over steps', () => {
@@ -897,11 +904,13 @@ describe('v2.13.1 extractDisplayText — sequence/parallel/race steps', () => {
       ],
     };
     const d = extractDisplayText(r, 'pipeline');
-    // a + c (b 没 result 被过滤)
-    expect(d.turns.length).toBe(2);
+    // v2.14.2: all steps shown (b has error text)
+    expect(d.turns.length).toBe(3);
     expect(d.turns[0].status).toBe('completed');
     expect(d.turns[0].duration).toBe(0.9);
-    expect(d.turns[1].duration).toBe(1.5);
+    expect(d.turns[1].status).toBe('failed');
+    expect(d.turns[1].text).toContain('oops');
+    expect(d.turns[2].duration).toBe(1.5);
   });
 
   it('race mode: only one completed step → marks isWinner', () => {
@@ -914,9 +923,11 @@ describe('v2.13.1 extractDisplayText — sequence/parallel/race steps', () => {
       ],
     };
     const d = extractDisplayText(r, 'pipeline');
-    expect(d.turns.length).toBe(1);
-    expect(d.turns[0].agent).toBe('b');
-    expect(d.turns[0].isWinner).toBe(true);
+    // v2.14.2: all steps shown, only b has isWinner
+    expect(d.turns.length).toBe(3);
+    const winner = d.turns.find(t => t.isWinner);
+    expect(winner.agent).toBe('b');
+    expect(winner.text).toBe('B wins');
   });
 
   it('non-race mode: no isWinner even if only one step has result', () => {
@@ -1089,5 +1100,250 @@ describe('v2.13.1 card rendering — conversation', () => {
     const turn = container.querySelector('.ch-turn-text');
     expect(turn.textContent).toBe('<img src=x onerror=alert(1)>');
     expect(turn.querySelector('img')).toBeNull();
+  });
+});
+
+// =============================================================================
+// v2.19.0 — SSE / cancel / live-poll / artifact link (from stashed v2.14.2-WIP)
+// =============================================================================
+
+/**
+ * 最小 EventSource mock — 让 stash 里的 _subscribeSSE 流程能跑.
+ * 测试通过手动调 .emit('event_type', data) 来推 SSE 事件.
+ */
+class MockEventSource {
+  constructor(url) {
+    this.url = url;
+    this._listeners = {};
+    this.readyState = 1;
+    this.closed = false;
+    MockEventSource.last = this;
+  }
+  addEventListener(type, handler) {
+    (this._listeners[type] = this._listeners[type] || []).push(handler);
+  }
+  set onerror(fn) { this._onerror = fn; }
+  emit(type, dataObj) {
+    const handlers = this._listeners[type] || [];
+    const evt = { data: JSON.stringify(dataObj) };
+    handlers.forEach(h => h(evt));
+  }
+  triggerError() { if (this._onerror) this._onerror({}); }
+  close() { this.closed = true; }
+}
+
+describe('v2.19.0 — SSE pipeline events', () => {
+  let container, client, onAgentOutput, history;
+  let origEventSource;
+
+  beforeEach(() => {
+    if (typeof localStorage !== 'undefined') localStorage.clear();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    client = mkClient();
+    onAgentOutput = vi.fn();
+    origEventSource = globalThis.EventSource;
+    globalThis.EventSource = MockEventSource;
+    MockEventSource.last = null;
+    history = new CommandHistory(container, { client, onAgentOutput, pollIntervalMs: 100 });
+  });
+
+  afterEach(() => {
+    globalThis.EventSource = origEventSource;
+    history.stop();
+  });
+
+  it('pipeline submission with remoteId opens SSE connection', () => {
+    history.pushSubmission(
+      { kind: 'pipeline', mode: 'sequence', agents: ['a', 'b'], prompt: 'p' },
+      { pipeline_id: 'pipe-123' }
+    );
+    expect(MockEventSource.last).not.toBeNull();
+    expect(MockEventSource.last.url).toBe('/api/pipelines/pipe-123/events');
+  });
+
+  it('step_started event populates rec.output.steps with running status', () => {
+    history.pushSubmission(
+      { kind: 'pipeline', mode: 'sequence', agents: ['claude', 'kiro'], prompt: 'p' },
+      { pipeline_id: 'p1' }
+    );
+    MockEventSource.last.emit('step_started', { index: 0, agent: 'claude', prompt_preview: 'do x' });
+    const rec = history.list()[0];
+    expect(rec.output.steps[0].agent).toBe('claude');
+    expect(rec.output.steps[0].status).toBe('running');
+    expect(rec.status).toBe('running');
+  });
+
+  it('step_progress with message.thinking accumulates and emits bubble (>5 chars)', () => {
+    history.pushSubmission(
+      { kind: 'pipeline', mode: 'sequence', agents: ['claude'], prompt: 'p' },
+      { pipeline_id: 'p2' }
+    );
+    MockEventSource.last.emit('step_started', { index: 0, agent: 'claude' });
+    MockEventSource.last.emit('step_progress', { index: 0, agent: 'claude', kind: 'message.thinking', content: 'thinking hard...' });
+    const rec = history.list()[0];
+    expect(rec.output.steps[0]._thinking).toMatch(/thinking hard/);
+    // bubble 应被 enqueue 到 claude 头顶
+    expect(onAgentOutput).toHaveBeenCalled();
+    const lastCall = onAgentOutput.mock.calls[onAgentOutput.mock.calls.length - 1];
+    expect(lastCall[0]).toBe('claude');
+    expect(lastCall[1]).toMatch(/^💭 /);
+  });
+
+  it('step_progress with message.part triggers bubble emit (deduped by parts_count)', () => {
+    history.pushSubmission(
+      { kind: 'pipeline', mode: 'sequence', agents: ['claude'], prompt: 'p' },
+      { pipeline_id: 'p3' }
+    );
+    MockEventSource.last.emit('step_started', { index: 0, agent: 'claude' });
+    onAgentOutput.mockClear();
+    MockEventSource.last.emit('step_progress', { index: 0, agent: 'claude', kind: 'message.part', content: 'partial output here' });
+    expect(onAgentOutput).toHaveBeenCalledWith('claude', expect.stringContaining('partial output'), expect.objectContaining({ duration: 2000 }));
+  });
+
+  it('step_progress with tool.start emits 🔧 bubble', () => {
+    history.pushSubmission(
+      { kind: 'pipeline', mode: 'sequence', agents: ['kiro'], prompt: 'p' },
+      { pipeline_id: 'p4' }
+    );
+    MockEventSource.last.emit('step_started', { index: 0, agent: 'kiro' });
+    onAgentOutput.mockClear();
+    MockEventSource.last.emit('step_progress', { index: 0, agent: 'kiro', kind: 'tool.start', title: 'ReadFile', toolCallId: 't1' });
+    expect(onAgentOutput).toHaveBeenCalledWith('kiro', '🔧 ReadFile', expect.any(Object));
+  });
+
+  it('step_completed sets status + result on the step', () => {
+    history.pushSubmission(
+      { kind: 'pipeline', mode: 'sequence', agents: ['kiro'], prompt: 'p' },
+      { pipeline_id: 'p5' }
+    );
+    MockEventSource.last.emit('step_started', { index: 0, agent: 'kiro' });
+    MockEventSource.last.emit('step_completed', {
+      index: 0, agent: 'kiro', status: 'completed',
+      result_preview: 'all done', duration: 4.5,
+    });
+    const rec = history.list()[0];
+    expect(rec.output.steps[0].status).toBe('completed');
+    expect(rec.output.steps[0].result).toBe('all done');
+    expect(rec.output.steps[0].duration).toBe(4.5);
+  });
+
+  it('step_failed sets status + error', () => {
+    history.pushSubmission(
+      { kind: 'pipeline', mode: 'sequence', agents: ['kiro'], prompt: 'p' },
+      { pipeline_id: 'p6' }
+    );
+    MockEventSource.last.emit('step_started', { index: 0, agent: 'kiro' });
+    MockEventSource.last.emit('step_failed', { index: 0, agent: 'kiro', error: 'boom' });
+    const rec = history.list()[0];
+    expect(rec.output.steps[0].status).toBe('failed');
+    expect(rec.output.steps[0].error).toBe('boom');
+  });
+
+  it('pipeline_done finalizes status + closes SSE', () => {
+    history.pushSubmission(
+      { kind: 'pipeline', mode: 'sequence', agents: ['kiro'], prompt: 'p' },
+      { pipeline_id: 'p7' }
+    );
+    const es = MockEventSource.last;
+    es.emit('pipeline_done', { status: 'succeeded', duration: 12.3 });
+    const rec = history.list()[0];
+    expect(rec.status).toBe('succeeded');
+    expect(rec.completedAt).toBeGreaterThan(0);
+    expect(es.closed).toBe(true);
+  });
+
+  it('SSE error → connection closed (poll fallback can take over)', () => {
+    history.pushSubmission(
+      { kind: 'pipeline', mode: 'sequence', agents: ['kiro'], prompt: 'p' },
+      { pipeline_id: 'p8' }
+    );
+    const es = MockEventSource.last;
+    es.triggerError();
+    expect(es.closed).toBe(true);
+  });
+
+  it('history.stop() closes all SSE connections', () => {
+    history.pushSubmission({ kind: 'pipeline', mode: 'sequence', agents: ['a'], prompt: 'p' }, { pipeline_id: 'p9' });
+    const es = MockEventSource.last;
+    history.stop();
+    expect(es.closed).toBe(true);
+  });
+});
+
+describe('v2.19.0 — Cancel button graceful 404 degrade', () => {
+  let container, history, origEventSource;
+
+  beforeEach(() => {
+    if (typeof localStorage !== 'undefined') localStorage.clear();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    origEventSource = globalThis.EventSource;
+    globalThis.EventSource = MockEventSource;
+    MockEventSource.last = null;
+  });
+
+  afterEach(() => {
+    globalThis.EventSource = origEventSource;
+    if (history) history.stop();
+  });
+
+  it('renders Cancel button on running pipeline', () => {
+    const client = mkClient();
+    history = new CommandHistory(container, { client, pollIntervalMs: 1000000 });
+    history.pushSubmission({ kind: 'pipeline', mode: 'sequence', agents: ['a'], prompt: 'p' }, { pipeline_id: 'pX' });
+    history._render();
+    expect(container.querySelector('.ch-cancel-btn')).not.toBeNull();
+  });
+
+  it('does NOT render Cancel button on completed pipeline', () => {
+    const client = mkClient();
+    history = new CommandHistory(container, { client, pollIntervalMs: 1000000 });
+    history.pushSubmission({ kind: 'pipeline', mode: 'sequence', agents: ['a'], prompt: 'p' }, { pipeline_id: 'pY' });
+    const rec = history.list()[0];
+    rec.status = 'succeeded';
+    history._render();
+    expect(container.querySelector('.ch-cancel-btn')).toBeNull();
+  });
+
+  it('cancel 404 → button shows "✕ N/A" graceful degrade', async () => {
+    const cancelPipeline = vi.fn().mockRejectedValue(new Error('HTTP 404 not found'));
+    const client = mkClient({ cancelPipeline });
+    history = new CommandHistory(container, { client, pollIntervalMs: 1000000 });
+    history.pushSubmission({ kind: 'pipeline', mode: 'sequence', agents: ['a'], prompt: 'p' }, { pipeline_id: 'pZ' });
+    history._render();
+    const btn = container.querySelector('.ch-cancel-btn');
+    btn.click();
+    // 等 promise 解析
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+    expect(cancelPipeline).toHaveBeenCalledWith('pZ');
+    expect(btn.textContent).toBe('✕ N/A');
+  });
+
+  it('cancel success → button shows "✕ Cancelled"', async () => {
+    const cancelPipeline = vi.fn().mockResolvedValue({ status: 'cancelled' });
+    const client = mkClient({ cancelPipeline });
+    history = new CommandHistory(container, { client, pollIntervalMs: 1000000 });
+    history.pushSubmission({ kind: 'pipeline', mode: 'sequence', agents: ['a'], prompt: 'p' }, { pipeline_id: 'pZZ' });
+    history._render();
+    const btn = container.querySelector('.ch-cancel-btn');
+    btn.click();
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+    expect(btn.textContent).toBe('✕ Cancelled');
+  });
+
+  it('cancel network error (non-404) → "✕ Error"', async () => {
+    const cancelPipeline = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    const client = mkClient({ cancelPipeline });
+    history = new CommandHistory(container, { client, pollIntervalMs: 1000000 });
+    history.pushSubmission({ kind: 'pipeline', mode: 'sequence', agents: ['a'], prompt: 'p' }, { pipeline_id: 'pE' });
+    history._render();
+    const btn = container.querySelector('.ch-cancel-btn');
+    btn.click();
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+    expect(btn.textContent).toBe('✕ Error');
   });
 });

@@ -102,4 +102,63 @@ describe('CommandClient', () => {
     const c = new CommandClient({ fetchImpl });
     await expect(c.pollJob('x')).rejects.toThrow(/404/);
   });
+
+  // ===========================================================================
+  // v2.19.0: live + cancel endpoints (from stashed v2.14.2-WIP)
+  // ===========================================================================
+
+  it('pollJobLive GETs /api/jobs/{id}/live', async () => {
+    const fetchImpl = mkOk({ job_id: 'j1', agent: 'kiro', status: 'running', content: 'partial', parts_count: 3 });
+    const c = new CommandClient({ fetchImpl });
+    const res = await c.pollJobLive('j1');
+    expect(fetchImpl).toHaveBeenCalledWith('/api/jobs/j1/live');
+    expect(res.parts_count).toBe(3);
+  });
+
+  it('pollJobLive throws if jobId missing', async () => {
+    const c = new CommandClient({ fetchImpl: mkOk({}) });
+    await expect(c.pollJobLive('')).rejects.toThrow(/jobId required/);
+  });
+
+  it('pollPipelineStepLive GETs /api/pipelines/{id}/steps/{i}/live', async () => {
+    const fetchImpl = mkOk({ job_id: 'j2', step: 1, content: 'x', parts_count: 1 });
+    const c = new CommandClient({ fetchImpl });
+    await c.pollPipelineStepLive('p1', 1);
+    expect(fetchImpl).toHaveBeenCalledWith('/api/pipelines/p1/steps/1/live');
+  });
+
+  it('pollPipelineStepLive validates stepIndex', async () => {
+    const c = new CommandClient({ fetchImpl: mkOk({}) });
+    await expect(c.pollPipelineStepLive('p1', null)).rejects.toThrow(/stepIndex required/);
+    await expect(c.pollPipelineStepLive('p1', -1)).rejects.toThrow(/stepIndex required/);
+    await expect(c.pollPipelineStepLive('', 0)).rejects.toThrow(/pipelineId required/);
+  });
+
+  it('cancelPipeline POSTs /api/pipelines/{id}/cancel', async () => {
+    const fetchImpl = mkOk({ status: 'cancelled' });
+    const c = new CommandClient({ fetchImpl });
+    await c.cancelPipeline('p1');
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('/api/pipelines/p1/cancel');
+    expect(init.method).toBe('POST');
+  });
+
+  it('cancelJob POSTs /api/jobs/{id}/cancel', async () => {
+    const fetchImpl = mkOk({ status: 'cancelled' });
+    const c = new CommandClient({ fetchImpl });
+    await c.cancelJob('j1');
+    expect(fetchImpl.mock.calls[0][0]).toBe('/api/jobs/j1/cancel');
+  });
+
+  it('cancel endpoints throw on missing id', async () => {
+    const c = new CommandClient({ fetchImpl: mkOk({}) });
+    await expect(c.cancelPipeline('')).rejects.toThrow(/pipelineId required/);
+    await expect(c.cancelJob('')).rejects.toThrow(/jobId required/);
+  });
+
+  it('cancel 404 from server → throws Error with status (UI graceful-degrade can detect)', async () => {
+    const fetchImpl = mkErr(404, 'not found');
+    const c = new CommandClient({ fetchImpl });
+    await expect(c.cancelPipeline('p1')).rejects.toThrow(/404/);
+  });
 });

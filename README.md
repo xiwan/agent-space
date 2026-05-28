@@ -16,6 +16,7 @@ Agents walk to their desk when busy, wander around the office when idle. Click a
 - Sidebar: Agents / History / Usage / Heartbeat / ⚡ Compose tabs
 - Heartbeat tab: live agent chatter feed with interval control + countdown bar
 - Heartbeat Intervene: inject talking-points into all agents (ttl-bounded), or ping a single agent immediately
+- History: real-time pipeline progress via SSE (step events, tool calls, thinking), live partial output for jobs, per-step artifact links (file download + URL extract), Cancel button (degrades gracefully if backend lacks endpoint), elapsed timer
 - Cross-device map sharing (server-side persistence)
 
 ## Quick Start

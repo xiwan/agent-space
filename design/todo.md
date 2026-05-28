@@ -4,6 +4,51 @@
 
 ---
 
+## acp-bridge cancel endpoints (todo #2 后端补全, 2026-05-28)
+
+### 背景
+
+v2.19.0 已在前端实现 Cancel UI (✕ Cancel 按钮), 但 acp-bridge 缺对应 endpoint.
+当前 probe 结果 (2026-05-28T10:42Z):
+- `POST /pipelines/{id}/cancel` → 404 (`code:not_found`)
+- `POST /jobs/{id}/cancel` → 404
+
+前端已 graceful degrade — 点击后显示 `✕ N/A`. 但用户体验半残.
+
+### 实现
+
+**Pipeline cancel** (易):
+- pipeline_runner 持有 `_running_pipelines: dict[str, PipelineState]`
+- 加 `is_cancelled: bool` 字段, runner 在每 step 间检查, True 则停 + set
+  `status='cancelled'`, raise `pipeline_done` SSE event
+- endpoint 实现:
+  ```python
+  @app.post("/pipelines/{pipeline_id}/cancel")
+  async def cancel_pipeline(pipeline_id: str):
+      state = pipeline_registry.get(pipeline_id)
+      if not state: return 404
+      state.is_cancelled = True
+      return {"status": "cancellation_requested", "pipeline_id": pipeline_id}
+  ```
+
+**Job cancel** (中):
+- 拿到 session_id → `pool.kill_session(session_id, signal=SIGTERM)`
+- job 状态 set 'cancelled', emit `job_done` (如有)
+- 注意正在跑的 acp 子进程, kill 干净要小心 (流可能卡住读端)
+
+### 触发条件
+
+- demo 里需要中断 30 分钟跑飞的 pipeline
+- 用户抱怨"提交错了得刷页面才能再来一次"
+- (现状: ✕ N/A 占位, 用户能看到入口知道功能在路上)
+
+### 估算
+
+- 1-2 小时, 单独 patch (acp-bridge 内一个 minor)
+- 验证: 前端不需要任何改动, 已经 ready
+
+---
+
 ## Per-agent LLM model display (deferred 2026-05-20)
 
 ### 背景
@@ -116,9 +161,15 @@ origin/master 当前落后 ≤ 3 个 commit.
 1. **History 命令上一条 / ↑↓ 回填** (v2.10.0 提到的 D 包)
    - prompt 提交后清掉, 想改一字重发要重打 — ↑ 调出最近, Enter 编辑
    - localStorage 持久化最近 10 条
-2. **Submit cancel / abort**
-   - submitting 中长 pipeline 没法取消, 用户只能刷页面
-   - 需要 ACP Bridge `DELETE /jobs/{id}` 或 `/pipelines/{id}` 支持
+2. **Submit cancel / abort** — ⚠️ 半成品 (前端 ✅ / 后端 ❌)
+   - **前端**: v2.19.0 已实现 — history 卡片有 `✕ Cancel` 按钮, 调
+     `cancelPipeline / cancelJob`, 失败时 graceful degrade 为 `✕ N/A`
+   - **后端**: acp-bridge 缺 `POST /pipelines/{id}/cancel` 和 `POST /jobs/{id}/cancel`
+     (probe 2026-05-28T10:42Z: `code:not_found`)
+   - **下一步**: 在 acp-bridge 加这两个 endpoint (估计 1 patch), 实现:
+     - pipeline: 标记 `is_cancelled=True`, runner 在每 step 间检查 → set status='cancelled'
+     - job: 用 acp_client.kill_session(session_id) 直接 SIGTERM session
+   - 实现完后前端立即生效, 不需改 agent-space
 3. **常用命令模板 / Recipes** (v2.10.0 F 包)
    - "summit demo / 翻译接力 / 4 模型并行对比"等预设
    - localStorage 保存自定义模板
@@ -127,9 +178,12 @@ origin/master 当前落后 ≤ 3 个 commit.
 5. **/heartbeat/logs 关联** (v2.11.0 方案 2️⃣)
    - history 卡片展开时拉对应 agent + 时间窗的 heartbeat logs, 拼成对话流
    - 比"终态 output"信息更丰富, 但精度有限 (跨 job 混入)
-6. **SSE / 流式输出** (v2.11.0 方案 3️⃣)
-   - 需要 ACP Bridge 支持 `/jobs/{id}/stream` (SSE 或 chunked)
-   - 体验最好, 工程量最大
+6. ~~**SSE / 流式输出**~~ — RESOLVED 2026-05-28 (v2.19.0)
+   - acp-bridge 提供 `/pipelines/{id}/events` SSE + `/jobs/{id}/live` + `/pipelines/{id}/steps/{i}/live`
+   - agent-space CommandHistory 订阅 5 种事件: `step_started / step_progress /
+     step_completed / step_failed / pipeline_done`, 同时支持 polling fallback
+   - bubble 联动: progress 事件直接 enqueue 到对应 agent 头顶气泡 (💭 thinking /
+     🔧 tool / message.part)
 7. **Cost 字段对接** (v2.12.0 留的钩子)
    - acp-bridge `/usage` SELECT 加 `cost_usd` (litellm_proxy.py)
    - acp-bridge `Job.to_dict` 暴露 `cost_usd / model_name / input_tokens / output_tokens`
@@ -139,7 +193,14 @@ origin/master 当前落后 ≤ 3 个 commit.
 
 ---
 
-## Stashed WIP — pickup as v2.19.0 (saved 2026-05-28 during v2.16.2; v2.17.0 used by HeartbeatView polish; v2.18.0 used by Sidebar Composer merge)
+## ~~Stashed WIP — pickup as v2.19.0~~ — RESOLVED 2026-05-28 (v2.19.0)
+
+stash 已取回并版本化为 v2.19.0 (commit pending). 5 文件全部恢复 + 30 个新单测.
+SSE 实时 pipeline 进度 / artifact UI / cancel 按钮 (✕ N/A 降级) / make-game
+pipeline 重做 全部上线.
+
+下面的设计细节作为档案保留, 取回流程已过期 (stash 已 drop).
+重要剩余项移到上方 "acp-bridge cancel endpoints" 待办.
 
 ### 状态
 

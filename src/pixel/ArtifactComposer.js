@@ -6,10 +6,10 @@
  */
 
 /**
- * 替换模板中的 {{input}} 占位符
+ * 替换模板中的 {{input}} 和 {{uid}} 占位符
  */
-export function renderTemplate(template, input) {
-  return template.replace(/\{\{input\}\}/g, input);
+export function renderTemplate(template, input, uid) {
+  return template.replace(/\{\{input\}\}/g, input).replace(/\{\{uid\}\}/g, uid);
 }
 
 /**
@@ -18,6 +18,7 @@ export function renderTemplate(template, input) {
  */
 export function buildArtifactPayload(artifact, input, selectedAgents) {
   if (!artifact || !input?.trim()) throw new Error('artifact and input required');
+  const uid = Math.random().toString(16).slice(2, 10);
 
   if (artifact.mode === 'conversation') {
     const agents = selectedAgents && selectedAgents.length >= 2
@@ -28,7 +29,7 @@ export function buildArtifactPayload(artifact, input, selectedAgents) {
       body: {
         mode: 'conversation',
         participants: agents,
-        topic: renderTemplate(artifact.promptTemplate, input),
+        topic: renderTemplate(artifact.promptTemplate, input, uid),
         config: { max_turns: artifact.maxTurns ?? 6 },
       },
     };
@@ -37,12 +38,19 @@ export function buildArtifactPayload(artifact, input, selectedAgents) {
   // sequence / parallel / race
   const steps = (artifact.steps || []).map(s => ({
     agent: s.agent,
-    prompt: renderTemplate(s.promptTemplate, input),
+    prompt: renderTemplate(s.promptTemplate, input, uid),
   }));
-  return {
-    endpoint: '/api/pipelines',
-    body: { mode: artifact.mode, steps },
-  };
+  const body = { mode: artifact.mode, steps };
+  if (artifact.context) {
+    const ctx = {};
+    for (const [k, v] of Object.entries(artifact.context)) {
+      ctx[k] = typeof v === 'string' ? renderTemplate(v, input, uid) : v;
+    }
+    body.context = ctx;
+  }
+  // Attach step artifact metadata for UI rendering
+  const _artifacts = (artifact.steps || []).map(s => s.artifact || null);
+  return { endpoint: '/api/pipelines', body, _artifacts };
 }
 
 export class ArtifactComposer {
@@ -110,6 +118,10 @@ export class ArtifactComposer {
     this._agentChipsEl = el('div', 'ac-agents');
     c.appendChild(this._agentChipsEl);
 
+    // steps 预览 (sequence/parallel/race 模式)
+    this._stepsEl = el('div', 'ac-steps');
+    c.appendChild(this._stepsEl);
+
     // prompt 输入
     const promptRow = el('div', 'ac-row ac-row-prompt');
     this._promptEl = el('textarea', 'ac-prompt');
@@ -143,8 +155,26 @@ export class ArtifactComposer {
       this._promptEl.placeholder = '描述你想要的...';
     }
 
+    // steps 预览
+    this._renderSteps();
+
     // agent chips visibility
     this._renderAgentChips();
+  }
+
+  _renderSteps() {
+    const artifact = this.artifacts[this.selectedIdx];
+    if (!this._stepsEl) return;
+    if (!artifact || artifact.mode === 'conversation' || !artifact.steps?.length) {
+      this._stepsEl.style.display = 'none';
+      this._stepsEl.innerHTML = '';
+      return;
+    }
+    this._stepsEl.style.display = '';
+    this._stepsEl.innerHTML = artifact.steps.map((s, i) => {
+      const arrow = i < artifact.steps.length - 1 ? ' →' : '';
+      return `<span class="ac-step-chip">${s.agent}${arrow}</span>`;
+    }).join(' ');
   }
 
   _renderAgentChips() {
