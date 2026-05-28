@@ -139,7 +139,7 @@ origin/master 当前落后 ≤ 3 个 commit.
 
 ---
 
-## Stashed WIP — pickup as v2.17.0 (saved 2026-05-28 during v2.16.2)
+## Stashed WIP — pickup as v2.18.0 (saved 2026-05-28 during v2.16.2; v2.17.0 superseded by HeartbeatView polish)
 
 ### 状态
 
@@ -183,13 +183,13 @@ v2.16.2 phase 6 pre-commit 时发现工作目录有 5 个文件的非本次 scop
   - race 模式 turns 从 1 → 3 全显示, isWinner 仍标记
   - 注释里标 `v2.14.2`
 
-### 取回流程 (推荐 v2.17.0)
+### 取回流程 (推荐 v2.18.0)
 
 ⚠️ **不要直接 `git stash pop` 后散乱 commit**. 走完整流程:
 
 1. Phase 0: 读这条 todo + 看 `git stash show -p stash@{0}` 复习实际 diff
-2. Phase 1: 声明版本号 (推荐 **v2.17.0** minor — 加新 endpoint + UI 大块 + 响应式 SSE)
-   写 `versions/v2.17.0.md` 设计文档, 拆 4 块 scope:
+2. Phase 1: 声明版本号 (推荐 **v2.18.0** minor — 加新 endpoint + UI 大块 + 响应式 SSE)
+   写 `versions/v2.18.0.md` 设计文档, 拆 4 块 scope:
    - A. CommandClient 4 个 endpoint
    - B. ArtifactComposer `{{uid}}` + context 模板化
    - C. CommandHistory SSE / 轮询 / cancel / artifact / progress
@@ -208,4 +208,7 @@ v2.16.2 phase 6 pre-commit 时发现工作目录有 5 个文件的非本次 scop
 ### 版本号检查
 
 注意 stash 里的代码注释写 `v2.14.2` 是历史误标 (实际未版本化). 取回时**用新号**
-(v2.17.0), 不要复用 2.14.2.
+(v2.18.0), 不要复用 2.14.2.
+
+> 改号历史: 2026-05-28 原计划 v2.17.0 → 实际 v2.17.0 被 HeartbeatView UX polish
+> (commit `5e250220`) 占用, stash 顺延 v2.18.0.
