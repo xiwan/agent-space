@@ -56,6 +56,96 @@ function pickIdleChat() {
   return IDLE_CHITCHAT[Math.floor(Math.random() * IDLE_CHITCHAT.length)];
 }
 
+// v2.16.2: bubble multi-line wrap 配置
+export const BUBBLE_MAX_CHARS = 500;
+export const BUBBLE_MAX_LINE_PX = 240;
+export const BUBBLE_MAX_LINES = 12;
+export const BUBBLE_LINE_HEIGHT = 12;  // 10px font + 2px leading
+
+/**
+ * v2.16.2: 字符级断行 (中英文混排, 像素字体, 无 word boundary).
+ *
+ * 行为:
+ *   1. text 先 hard-cap 到 maxChars; 超长在末尾追加 '…' (替换最后一字, 不撑破 cap)
+ *   2. 显式 '\n' 强制断行
+ *   3. 非换行字符逐字累积, 当 measure(line+ch) > maxLineWidthPx 时换行
+ *   4. 行数到达 maxLines 时, 末行末尾以 '…' 收尾 (尽量不破坏单字),
+ *      其余字符全部丢弃
+ *   5. 单字宽度自身就超过 maxLineWidthPx 时, 仍单独占一行 (不无限循环)
+ *
+ * @param {string} text     原始文本 (null/undefined/非字符串视为空)
+ * @param {(s:string)=>number} measure  字符串像素宽度测量函数
+ * @param {number} maxLineWidthPx       每行最大像素宽度
+ * @param {number} maxLines             最大行数
+ * @param {number} [maxChars=BUBBLE_MAX_CHARS]  字符总数 hard-cap
+ * @returns {string[]}                  分好行的字符串数组 (>=0 行)
+ */
+export function wrapBubbleText(text, measure, maxLineWidthPx, maxLines, maxChars = BUBBLE_MAX_CHARS) {
+  if (text == null) return [];
+  let s = String(text);
+  if (!s) return [];
+  if (maxLines <= 0) return [];
+
+  // 1. hard-cap 字符数
+  if (s.length > maxChars) {
+    s = s.slice(0, Math.max(0, maxChars - 1)) + '…';
+  }
+
+  const lines = [];
+  let cur = '';
+  let truncated = false;
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+
+    // 显式换行符
+    if (ch === '\n') {
+      lines.push(cur);
+      cur = '';
+      if (lines.length >= maxLines) {
+        if (i < s.length - 1) truncated = true;
+        break;
+      }
+      continue;
+    }
+
+    const tentative = cur + ch;
+    if (cur.length > 0 && measure(tentative) > maxLineWidthPx) {
+      // 当前行装不下, 先收尾
+      lines.push(cur);
+      cur = '';
+      if (lines.length >= maxLines) {
+        truncated = true;
+        break;
+      }
+      cur = ch;
+    } else {
+      cur = tentative;
+    }
+  }
+
+  // 收尾: 还有剩余且未达上限
+  if (cur.length > 0 && lines.length < maxLines) {
+    lines.push(cur);
+    cur = '';
+  } else if (cur.length > 0) {
+    // cur 有剩但已达上限: 也算被截
+    truncated = true;
+  }
+
+  // 行数被截: 末行末尾以 '…' 收尾 (尽量保留可见信息)
+  if (truncated && lines.length > 0) {
+    const last = lines[lines.length - 1] || '';
+    let candidate = last + '…';
+    if (measure(candidate) > maxLineWidthPx && last.length > 0) {
+      candidate = last.slice(0, -1) + '…';
+    }
+    lines[lines.length - 1] = candidate;
+  }
+
+  return lines;
+}
+
 // v2.10.0: busy agent emoji 词库 (按工作主题分组)
 // 设计目标: 比 description 文本更生动 / 像素气泡更窄 / 风格统一
 export const BUSY_EMOJI_THEMES = {
@@ -905,26 +995,38 @@ export class PixelRenderer {
   /**
    * v2.7.0: 像素风聊天气泡. 只画 a.bubbleText (由 _tick 的状态机维护).
    * 风格: 纯色填充 + 1px 黑边 (像素风, 无圆角无阴影), 像素字体, 方块尾巴.
+   * v2.16.2: 多行换行 + 500 字符上限 (用 wrapBubbleText 抽出).
    */
   _drawBubble(a) {
     const { ctx } = this;
     const raw = (a.bubbleText || '').trim();
     if (!raw) return;
 
-    // 截断长文本 — 单行最大宽度
-    const MAX_CHARS = 24;
-    const text = raw.length > MAX_CHARS ? raw.slice(0, MAX_CHARS - 1) + '…' : raw;
-
     ctx.save();
     ctx.font = '10px "Courier New", monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
+    // 多行换行 (字符级断行, 中英文混排)
+    const measure = (s) => ctx.measureText(s).width;
+    const lines = wrapBubbleText(raw, measure, BUBBLE_MAX_LINE_PX, BUBBLE_MAX_LINES);
+    if (lines.length === 0) {
+      ctx.restore();
+      return;
+    }
+
     const padX = 6;
     const padY = 4;
-    const tw = ctx.measureText(text).width;
-    const bw = Math.ceil(tw + padX * 2);
-    const bh = 16;
+    const lineH = BUBBLE_LINE_HEIGHT;
+
+    // bubble 宽度 = 最长行宽 + 左右 padding (clamp 到 maxLineWidthPx + padding)
+    let maxW = 0;
+    for (const ln of lines) {
+      const w = measure(ln);
+      if (w > maxW) maxW = w;
+    }
+    const bw = Math.ceil(maxW + padX * 2);
+    const bh = lines.length * lineH + padY * 2;
 
     // bubble 位于名字标签上方, 留 4px 间距 + 4px 给尾巴
     const bubbleBottom = a.cy - 80 - 9 - 8; // labelY (a.cy-80) - bg upper(9) - gap(8)
@@ -953,9 +1055,12 @@ export class PixelRenderer {
     ctx.fillRect(tailX - 2, tailY,     4, 1);
     ctx.fillRect(tailX - 1, tailY + 1, 2, 1);
 
-    // 4. 文字
+    // 4. 文字 (逐行)
     ctx.fillStyle = '#1f2937';
-    ctx.fillText(text, a.cx, by + bh / 2);
+    const firstLineMid = by + padY + lineH / 2;
+    for (let i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i], a.cx, firstLineMid + i * lineH);
+    }
 
     ctx.restore();
   }

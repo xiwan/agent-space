@@ -1,6 +1,16 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { PixelRenderer, BUSY_EMOJI_THEMES, pickBusyEmojiPool, pickBusyEmojis, computeFrameInfo } from '../src/pixel/PixelRenderer.js';
+import {
+  PixelRenderer,
+  BUSY_EMOJI_THEMES,
+  pickBusyEmojiPool,
+  pickBusyEmojis,
+  computeFrameInfo,
+  wrapBubbleText,
+  BUBBLE_MAX_CHARS,
+  BUBBLE_MAX_LINE_PX,
+  BUBBLE_MAX_LINES,
+} from '../src/pixel/PixelRenderer.js';
 
 // happy-dom doesn't support canvas 2d context; mock it
 function makeCanvas() {
@@ -315,15 +325,18 @@ describe('PixelRenderer v2.6.0', () => {
       expect(texts).toEqual([]);
     });
 
-    it('long bubbleText is truncated with ellipsis', () => {
-      const a = { name: 'k', cx: 100, cy: 100, state: 'idle',
-        bubbleText: 'This is a very long bubble that exceeds the maximum width', color: 0 };
+    it('extremely long bubbleText is hard-capped to BUBBLE_MAX_CHARS with ellipsis (v2.16.2)', () => {
+      // 在 happy-dom mock 下 measureText 总返回 40px, 所以单行装得下任意短文本.
+      // 这条用例只验证 500 字符 hard-cap 行为, 即超长文本会先被截到 ≤500 字并加 …
+      const long = 'a'.repeat(BUBBLE_MAX_CHARS + 50);
+      const a = { name: 'k', cx: 100, cy: 100, state: 'idle', bubbleText: long, color: 0 };
       const texts = [];
       ctx.fillText = vi.fn((...args) => { texts.push(args[0]); });
       renderer._drawBubble(a);
-      const drawn = texts[0];
-      expect(drawn.length).toBeLessThanOrEqual(24);
-      expect(drawn.endsWith('…')).toBe(true);
+      // hard-cap 后总字符数不超过 BUBBLE_MAX_CHARS
+      const allText = texts.join('');
+      expect(allText.length).toBeLessThanOrEqual(BUBBLE_MAX_CHARS);
+      expect(allText.endsWith('…')).toBe(true);
     });
 
     it('_draw skips bubble when bubbleText is null (even if description set)', () => {
@@ -341,6 +354,112 @@ describe('PixelRenderer v2.6.0', () => {
       ctx.fillText = vi.fn((...args) => { texts.push(args[0]); });
       renderer._draw();
       expect(texts).not.toContain('should not show');
+    });
+  });
+
+  describe('wrapBubbleText (v2.16.2 pure function)', () => {
+    // 用注入的 measure 函数, 不依赖 happy-dom 的 mock canvas.
+    // 简单策略: 每个字符 10px (近似等宽像素字体).
+    const measure10 = (s) => s.length * 10;
+
+    it('null/empty/undefined returns []', () => {
+      expect(wrapBubbleText(null, measure10, 100, 5)).toEqual([]);
+      expect(wrapBubbleText(undefined, measure10, 100, 5)).toEqual([]);
+      expect(wrapBubbleText('', measure10, 100, 5)).toEqual([]);
+    });
+
+    it('short text fits in one line', () => {
+      // 'hello' = 50px, 远小于 100px → 1 行
+      const lines = wrapBubbleText('hello', measure10, 100, 5);
+      expect(lines).toEqual(['hello']);
+    });
+
+    it('text that exactly fills a line stays one line', () => {
+      // 10 chars * 10px = 100px (== maxLineWidthPx, 不超出)
+      const lines = wrapBubbleText('abcdefghij', measure10, 100, 5);
+      expect(lines).toEqual(['abcdefghij']);
+    });
+
+    it('wraps to multiple lines when exceeding max width', () => {
+      // 25 chars * 10px = 250px, max 100px → 应分 3 行
+      const lines = wrapBubbleText('abcdefghijklmnopqrstuvwxy', measure10, 100, 10);
+      expect(lines.length).toBe(3);
+      // 前两行各 10 字符, 最后一行 5 字符
+      expect(lines[0]).toBe('abcdefghij');
+      expect(lines[1]).toBe('klmnopqrst');
+      expect(lines[2]).toBe('uvwxy');
+    });
+
+    it('explicit \\n forces line break', () => {
+      const lines = wrapBubbleText('hi\nthere', measure10, 100, 5);
+      expect(lines).toEqual(['hi', 'there']);
+    });
+
+    it('multiple \\n produce empty lines', () => {
+      const lines = wrapBubbleText('a\n\nb', measure10, 100, 5);
+      expect(lines).toEqual(['a', '', 'b']);
+    });
+
+    it('hard-caps text to BUBBLE_MAX_CHARS (501 → ends with …)', () => {
+      // 501 chars 'a' → 应截到 500 字 (其中末尾是 …)
+      const long = 'a'.repeat(501);
+      // 用宽行宽 + 高行数, 让所有内容都能塞下, 只验 hard-cap
+      const lines = wrapBubbleText(long, () => 0, 99999, 100);
+      const total = lines.join('');
+      expect(total.length).toBe(BUBBLE_MAX_CHARS);
+      expect(total.endsWith('…')).toBe(true);
+    });
+
+    it('text exactly BUBBLE_MAX_CHARS is NOT modified (no extra …)', () => {
+      const exact = 'b'.repeat(BUBBLE_MAX_CHARS);
+      const lines = wrapBubbleText(exact, () => 0, 99999, 100);
+      expect(lines.join('')).toBe(exact);
+      expect(lines.join('').endsWith('…')).toBe(false);
+    });
+
+    it('truncates with … on last line when exceeding maxLines', () => {
+      // 50 chars, 每行最多 10 字符, maxLines=3 → 应只渲 3 行, 末行尾 …
+      const text = 'a'.repeat(50);
+      const lines = wrapBubbleText(text, measure10, 100, 3);
+      expect(lines.length).toBe(3);
+      expect(lines[2].endsWith('…')).toBe(true);
+    });
+
+    it('does NOT add … when text fits exactly in maxLines', () => {
+      // 30 chars, 每行 10 字符, maxLines=3 → 恰好 3 行, 不应有 …
+      const text = 'a'.repeat(30);
+      const lines = wrapBubbleText(text, measure10, 100, 3);
+      expect(lines.length).toBe(3);
+      expect(lines.join('')).toBe(text);
+      expect(lines.some((l) => l.endsWith('…'))).toBe(false);
+    });
+
+    it('handles CJK (Chinese) characters as character-level wrap', () => {
+      // 6 中文字, measure 假设每字 10px, 行宽 30px → 每行 3 字 → 2 行
+      const lines = wrapBubbleText('你好世界再见', measure10, 30, 5);
+      expect(lines).toEqual(['你好世', '界再见']);
+    });
+
+    it('handles mixed CJK + ASCII (no word boundary)', () => {
+      // 'hi你好bye' = 7 chars * 10 = 70px, maxLine 40px → 应分 2 行 (4 + 3)
+      const lines = wrapBubbleText('hi你好bye', measure10, 40, 5);
+      expect(lines.length).toBe(2);
+      expect(lines[0]).toBe('hi你好');
+      expect(lines[1]).toBe('bye');
+    });
+
+    it('single character wider than maxLineWidthPx still gets one line (no infinite loop)', () => {
+      // measure 永远 > maxLine → 单字仍占一行
+      const wideMeasure = () => 999;
+      const lines = wrapBubbleText('ab', wideMeasure, 100, 5);
+      // 至少不死循环, 输出有限
+      expect(lines.length).toBeGreaterThan(0);
+      expect(lines.length).toBeLessThanOrEqual(5);
+    });
+
+    it('zero or negative maxLines returns []', () => {
+      expect(wrapBubbleText('hello', measure10, 100, 0)).toEqual([]);
+      expect(wrapBubbleText('hello', measure10, 100, -1)).toEqual([]);
     });
   });
 
