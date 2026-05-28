@@ -57,7 +57,7 @@ async function main() {
 
   const sidebarEl = document.getElementById('pixelSidebar');
   if (!sidebarEl) { console.error('[pixel] #pixelSidebar not found'); return; }
-  const composerEl = document.getElementById('pixelComposer');
+  // v2.18.0: composer 已并入 sidebar 第 5 tab — 不再有底部 #pixelComposer 节点
 
   const bgSelectEl = document.getElementById('pixelBgSelect');
   const editBtnEl = document.getElementById('pixelEditBtn');
@@ -122,46 +122,32 @@ async function main() {
     onCountChange: (n) => sidebar.setHistoryCount(n),
   }) : null;
 
-  // === v2.14.0: Artifact (Quick) + Command (Advanced) tab 切换 ===
+  // === v2.18.0: Composer 已并入 Sidebar 第 5 tab ===
+  // 布局: Quick (ArtifactComposer) 上 + Advanced (CommandComposer) 下, 都默认展开,
+  // 各自独立 Submit. 中间用一个分隔标题区分.
+  const composerEl = sidebar.getComposerContainer();
   let composer = null;
   let artifactComposer = null;
 
   if (composerEl) {
-    // 构建 tab bar + 两个 panel
-    const tabBar = document.createElement('div');
-    tabBar.className = 'composer-tabs';
-    const tabQuick = document.createElement('button');
-    tabQuick.className = 'composer-tab active';
-    tabQuick.textContent = '⚡ Quick';
-    const tabAdvanced = document.createElement('button');
-    tabAdvanced.className = 'composer-tab';
-    tabAdvanced.textContent = '⚙ Advanced';
-    tabBar.appendChild(tabQuick);
-    tabBar.appendChild(tabAdvanced);
-
+    // Quick panel (上)
+    const quickHeader = document.createElement('div');
+    quickHeader.className = 'composer-section-head';
+    quickHeader.textContent = '⚡ Quick';
     const quickPanel = document.createElement('div');
-    quickPanel.className = 'composer-panel';
+    quickPanel.className = 'composer-panel composer-quick';
+
+    // Advanced panel (下)
+    const advHeader = document.createElement('div');
+    advHeader.className = 'composer-section-head';
+    advHeader.textContent = '⚙ Advanced';
     const advancedPanel = document.createElement('div');
-    advancedPanel.className = 'composer-panel';
-    advancedPanel.style.display = 'none';
+    advancedPanel.className = 'composer-panel composer-advanced';
 
-    composerEl.appendChild(tabBar);
+    composerEl.appendChild(quickHeader);
     composerEl.appendChild(quickPanel);
+    composerEl.appendChild(advHeader);
     composerEl.appendChild(advancedPanel);
-
-    // tab 切换
-    tabQuick.addEventListener('click', () => {
-      tabQuick.classList.add('active');
-      tabAdvanced.classList.remove('active');
-      quickPanel.style.display = '';
-      advancedPanel.style.display = 'none';
-    });
-    tabAdvanced.addEventListener('click', () => {
-      tabAdvanced.classList.add('active');
-      tabQuick.classList.remove('active');
-      advancedPanel.style.display = '';
-      quickPanel.style.display = 'none';
-    });
 
     // Advanced = 现有 CommandComposer
     composer = new CommandComposer(advancedPanel, {

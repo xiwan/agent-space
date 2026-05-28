@@ -30,12 +30,14 @@ describe('Sidebar (v2.2.0)', () => {
     // v2.10.0: shell 自带 tabs + agents/history 容器
     // v2.12.0: 加 usage tab → 3 个
     // v2.15.0: 加 heartbeat tab → 4 个
+    // v2.18.0: 加 composer tab → 5 个
     expect(container.querySelector('.sidebar-tabs')).not.toBeNull();
-    expect(container.querySelectorAll('.sidebar-tab').length).toBe(4);
+    expect(container.querySelectorAll('.sidebar-tab').length).toBe(5);
     expect(container.querySelector('.sidebar-agents')).not.toBeNull();
     expect(container.querySelector('.sidebar-history')).not.toBeNull();
     expect(container.querySelector('.sidebar-usage')).not.toBeNull();
     expect(container.querySelector('.sidebar-heartbeat')).not.toBeNull();
+    expect(container.querySelector('.sidebar-composer')).not.toBeNull();
   });
 
   it('setAgents renders one card per agent in order', () => {
@@ -310,6 +312,7 @@ describe('Sidebar (v2.2.0)', () => {
     expect(c2.querySelector('.sidebar-agents').style.display).toBe('none');
     expect(c2.querySelector('.sidebar-history-wrap').style.display).toBe('none');
     expect(c2.querySelector('.sidebar-usage').style.display).toBe('none');
+    expect(c2.querySelector('.sidebar-composer').style.display).toBe('none');
     expect(sb.getTab()).toBe('heartbeat');
   });
 
@@ -337,5 +340,60 @@ describe('Sidebar (v2.2.0)', () => {
     new Sidebar(c2, { onTabChange });
     c2.querySelector('[data-tab="heartbeat"]').click();
     expect(onTabChange).toHaveBeenCalledWith('heartbeat');
+  });
+
+  // ============================================================
+  // v2.18.0: composer tab (合并原底部 #pixelComposer)
+  // ============================================================
+  it('v2.18.0: shell renders Composer tab button + container', () => {
+    expect(container.querySelector('[data-tab="composer"]')).not.toBeNull();
+    expect(container.querySelector('.sidebar-composer')).not.toBeNull();
+  });
+
+  it('v2.18.0: clicking Composer tab shows composer container, hides others', () => {
+    const c2 = document.createElement('div');
+    document.body.appendChild(c2);
+    const sb = new Sidebar(c2);
+    c2.querySelector('[data-tab="composer"]').click();
+    expect(c2.querySelector('.sidebar-composer').style.display).toBe('');
+    expect(c2.querySelector('.sidebar-agents').style.display).toBe('none');
+    expect(c2.querySelector('.sidebar-history-wrap').style.display).toBe('none');
+    expect(c2.querySelector('.sidebar-usage').style.display).toBe('none');
+    expect(c2.querySelector('.sidebar-heartbeat').style.display).toBe('none');
+    expect(sb.getTab()).toBe('composer');
+  });
+
+  it('v2.18.0: getComposerContainer returns the .sidebar-composer element', () => {
+    const c2 = document.createElement('div');
+    document.body.appendChild(c2);
+    const sb = new Sidebar(c2);
+    const composerEl = sb.getComposerContainer();
+    expect(composerEl).not.toBeNull();
+    expect(composerEl.classList.contains('sidebar-composer')).toBe(true);
+  });
+
+  it('v2.18.0: localStorage persists "composer" tab choice', () => {
+    localStorage.setItem('pixel.sidebarTab', 'composer');
+    const c2 = document.createElement('div');
+    document.body.appendChild(c2);
+    const sb = new Sidebar(c2);
+    expect(sb.getTab()).toBe('composer');
+    expect(c2.querySelector('.sidebar-composer').style.display).toBe('');
+  });
+
+  it('v2.18.0: onTabChange fires for composer', () => {
+    const onTabChange = vi.fn();
+    const c2 = document.createElement('div');
+    new Sidebar(c2, { onTabChange });
+    c2.querySelector('[data-tab="composer"]').click();
+    expect(onTabChange).toHaveBeenCalledWith('composer');
+  });
+
+  it('v2.18.0: invalid tab values rejected (still rejects unknown)', () => {
+    const c2 = document.createElement('div');
+    document.body.appendChild(c2);
+    const sb = new Sidebar(c2);
+    sb._setTab('bogus');
+    expect(sb.getTab()).toBe('agents'); // 不变
   });
 });

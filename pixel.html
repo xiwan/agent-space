@@ -1086,6 +1086,26 @@
       flex-direction: column;
       gap: 8px;
     }
+    /* === v2.18.0: Composer tab (Quick + Advanced 都默认展开) === */
+    .sidebar-composer {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .composer-section-head {
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      color: #94a3b8;
+      text-transform: uppercase;
+      border-bottom: 1px solid #334155;
+      padding-bottom: 4px;
+      margin-top: 4px;
+      flex-shrink: 0;
+    }
+    .composer-section-head:first-child { margin-top: 0; }
     .hb-controls {
       display: flex;
       flex-wrap: wrap;
@@ -1472,13 +1492,18 @@
       /* sidebar 紧凑卡片 */
       #pixelSidebar {
         width: 100%;
+        max-width: 100%;        /* v2.18.0 fix: 覆盖桌面端 max-width: 70vw, 不然移动端只占 70vw */
+        min-width: 0;           /* 同样覆盖桌面端 min-width: 200px (移动端窄屏可能 < 200) */
         border-left: 0;
         border-top: 1px solid #334155;
-        max-height: 28vh; /* v2.10.0: 从 40vh 收紧给 composer 让位 */
+        max-height: 60vh; /* v2.18.0: composer 并入后扩大 (从 28vh) */
       }
+      /* v2.18.0: 移动端纵向布局下, 横向 resizer 无意义 → 隐藏 */
+      #sidebarResizer { display: none; }
       .sidebar-agents,
       .sidebar-history,
-      .sidebar-usage {
+      .sidebar-usage,
+      .sidebar-composer {
         padding: 8px;
         padding-bottom: calc(8px + env(safe-area-inset-bottom));
       }
@@ -1514,13 +1539,8 @@
       }
 
       /* === v2.10.0: Composer 移动端紧凑 === */
-      #pixelComposer {
-        padding: 8px 10px;
-        gap: 6px;
-        padding-bottom: calc(8px + env(safe-area-inset-bottom));
-        /* v2.11.0 (B4 mobile): 整体高度 40vh */
-        max-height: 40vh;
-      }
+      /* v2.18.0: #pixelComposer 节点已移除 (composer 并入 sidebar);
+         保留下面 .cc-* 子样式因为 CommandComposer 仍在用. */
       .cc-row-controls .cc-field { font-size: 10px; }
       .cc-mode, .cc-sync, .cc-max-turns {
         font-size: 11px;
@@ -1588,8 +1608,6 @@
       <div id="sidebarResizer"></div>
       <aside id="pixelSidebar"></aside>
     </main>
-
-    <section id="pixelComposer"></section>
   </div>
 
   <script>

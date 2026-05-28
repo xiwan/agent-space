@@ -12,8 +12,8 @@ Agents walk to their desk when busy, wander around the office when idle. Click a
 - Per-map editor: paint obstacles + assign per-agent home/work/idle zones on a 16×16 grid
 - A* pathfinding around obstacles
 - Intermittent chat bubbles + busy emoji indicators
-- Command Composer: invoke ACP Bridge runs/jobs/pipelines from the UI
-- Sidebar: Agents / History / Usage / Heartbeat tabs
+- Command Composer: invoke ACP Bridge runs/jobs/pipelines from the UI (Quick presets + Advanced raw form, both inside the sidebar Compose tab)
+- Sidebar: Agents / History / Usage / Heartbeat / ⚡ Compose tabs
 - Heartbeat tab: live agent chatter feed with interval control + countdown bar
 - Heartbeat Intervene: inject talking-points into all agents (ttl-bounded), or ping a single agent immediately
 - Cross-device map sharing (server-side persistence)
