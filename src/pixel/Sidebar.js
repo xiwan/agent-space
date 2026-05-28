@@ -1,9 +1,11 @@
 /**
- * Sidebar — Pixel viewer 右侧 (移动端底部) 双 tab 面板 (v2.10.0)
+ * Sidebar — Pixel viewer 右侧 (移动端底部) 多 tab 面板.
  *
- * 顶部 tab: [Agents] / [History]
+ * 顶部 tab: [Agents] / [History] / [Usage] / [Heartbeat] (v2.15.0)
  *   - Agents tab: 卡片列表 (沿用 v2.5.0 行为)
  *   - History tab: 由外部 (CommandHistory) 接管 contents
+ *   - Usage tab: 由外部 (UsageView) 接管 contents (v2.12.0)
+ *   - Heartbeat tab: 由外部 (HeartbeatView) 接管 contents (v2.15.0)
  *
  * 选中态由外部传入 (setSelected) — agent 卡片 → canvas / sidebar 双向 toggle.
  *
@@ -11,6 +13,10 @@
  *   - 顶部加 tab bar
  *   - 不直接管 history 内容 — Sidebar 提供 history 容器, CommandHistory 自己 render 进去
  *   - tab 切换持久化到 localStorage (`pixel.sidebarTab`)
+ *
+ * v2.15.0 变化:
+ *   - 加第 4 tab Heartbeat
+ *   - localStorage 接受 'heartbeat' 字面量
  */
 
 const STATE_LABELS = {
@@ -42,7 +48,7 @@ export class Sidebar {
     let initialTab = 'agents';
     try {
       const stored = (typeof localStorage !== 'undefined') ? localStorage.getItem(TAB_LS_KEY) : null;
-      if (stored === 'agents' || stored === 'history' || stored === 'usage') initialTab = stored;
+      if (stored === 'agents' || stored === 'history' || stored === 'usage' || stored === 'heartbeat') initialTab = stored;
     } catch {}
     this._tab = initialTab;
 
@@ -79,8 +85,15 @@ export class Sidebar {
     return this.container.querySelector('.sidebar-usage');
   }
 
+  /**
+   * v2.15.0: 由外部 (HeartbeatView) 拿到 heartbeat container 自己 render.
+   */
+  getHeartbeatContainer() {
+    return this.container.querySelector('.sidebar-heartbeat');
+  }
+
   _setTab(tab) {
-    if (tab !== 'agents' && tab !== 'history' && tab !== 'usage') return;
+    if (tab !== 'agents' && tab !== 'history' && tab !== 'usage' && tab !== 'heartbeat') return;
     if (this._tab === tab) return;
     this._tab = tab;
     try {
@@ -96,6 +109,7 @@ export class Sidebar {
         <button class="sidebar-tab" data-tab="agents">Agents</button>
         <button class="sidebar-tab" data-tab="history">History</button>
         <button class="sidebar-tab" data-tab="usage">Usage</button>
+        <button class="sidebar-tab" data-tab="heartbeat">Heartbeat</button>
       </div>
       <div class="sidebar-agents"></div>
       <div class="sidebar-history-wrap">
@@ -106,6 +120,7 @@ export class Sidebar {
         <div class="sidebar-history"></div>
       </div>
       <div class="sidebar-usage"></div>
+      <div class="sidebar-heartbeat"></div>
     `;
     this.container.querySelectorAll('.sidebar-tab').forEach(btn => {
       btn.addEventListener('click', () => this._setTab(btn.dataset.tab));
@@ -145,9 +160,11 @@ export class Sidebar {
     const a = this.container.querySelector('.sidebar-agents');
     const h = this.container.querySelector('.sidebar-history-wrap');
     const u = this.container.querySelector('.sidebar-usage');
+    const b = this.container.querySelector('.sidebar-heartbeat');
     if (a) a.style.display = this._tab === 'agents' ? '' : 'none';
     if (h) h.style.display = this._tab === 'history' ? '' : 'none';
     if (u) u.style.display = this._tab === 'usage' ? '' : 'none';
+    if (b) b.style.display = this._tab === 'heartbeat' ? '' : 'none';
   }
 
   _renderAgents() {

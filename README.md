@@ -13,7 +13,8 @@ Agents walk to their desk when busy, wander around the office when idle. Click a
 - A* pathfinding around obstacles
 - Intermittent chat bubbles + busy emoji indicators
 - Command Composer: invoke ACP Bridge runs/jobs/pipelines from the UI
-- Sidebar: Agents / History / Usage tabs
+- Sidebar: Agents / History / Usage / Heartbeat tabs
+- Heartbeat tab: live agent chatter feed with interval control + countdown bar
 - Cross-device map sharing (server-side persistence)
 
 ## Quick Start
@@ -62,6 +63,9 @@ src/pixel/              — all application modules
   CommandClient.js      — HTTP client for runs/jobs/pipelines
   CommandHistory.js     — persistent history (localStorage)
   Sidebar.js            — tabs, agent cards, selection sync
+  UsageView.js          — /usage token / cache stats, by-model breakdown
+  HeartbeatView.js      — /heartbeat logs feed, interval control, countdown bar
+  ArtifactComposer.js   — Quick-mode preset pipelines (artifacts.json)
 public/pixel/           — backgrounds + character sprites + maps
 serve.js                — Express prod server + API proxy
 vite.config.js          — dev proxy + pixel-maps middleware

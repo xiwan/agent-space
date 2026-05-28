@@ -29,11 +29,13 @@ describe('Sidebar (v2.2.0)', () => {
     expect(container.querySelectorAll('.pixel-card').length).toBe(0);
     // v2.10.0: shell 自带 tabs + agents/history 容器
     // v2.12.0: 加 usage tab → 3 个
+    // v2.15.0: 加 heartbeat tab → 4 个
     expect(container.querySelector('.sidebar-tabs')).not.toBeNull();
-    expect(container.querySelectorAll('.sidebar-tab').length).toBe(3);
+    expect(container.querySelectorAll('.sidebar-tab').length).toBe(4);
     expect(container.querySelector('.sidebar-agents')).not.toBeNull();
     expect(container.querySelector('.sidebar-history')).not.toBeNull();
     expect(container.querySelector('.sidebar-usage')).not.toBeNull();
+    expect(container.querySelector('.sidebar-heartbeat')).not.toBeNull();
   });
 
   it('setAgents renders one card per agent in order', () => {
@@ -289,5 +291,51 @@ describe('Sidebar (v2.2.0)', () => {
     } finally {
       window.confirm = oldConfirm;
     }
+  });
+
+  // ============================================================
+  // v2.15.0: heartbeat tab
+  // ============================================================
+  it('v2.15.0: shell renders Heartbeat tab button + container', () => {
+    expect(container.querySelector('[data-tab="heartbeat"]')).not.toBeNull();
+    expect(container.querySelector('.sidebar-heartbeat')).not.toBeNull();
+  });
+
+  it('v2.15.0: clicking Heartbeat tab shows heartbeat container, hides others', () => {
+    const c2 = document.createElement('div');
+    document.body.appendChild(c2);
+    const sb = new Sidebar(c2);
+    c2.querySelector('[data-tab="heartbeat"]').click();
+    expect(c2.querySelector('.sidebar-heartbeat').style.display).toBe('');
+    expect(c2.querySelector('.sidebar-agents').style.display).toBe('none');
+    expect(c2.querySelector('.sidebar-history-wrap').style.display).toBe('none');
+    expect(c2.querySelector('.sidebar-usage').style.display).toBe('none');
+    expect(sb.getTab()).toBe('heartbeat');
+  });
+
+  it('v2.15.0: getHeartbeatContainer returns the .sidebar-heartbeat element', () => {
+    const c2 = document.createElement('div');
+    document.body.appendChild(c2);
+    const sb = new Sidebar(c2);
+    const h = sb.getHeartbeatContainer();
+    expect(h).not.toBeNull();
+    expect(h.classList.contains('sidebar-heartbeat')).toBe(true);
+  });
+
+  it('v2.15.0: localStorage persists "heartbeat" tab choice', () => {
+    localStorage.setItem('pixel.sidebarTab', 'heartbeat');
+    const c2 = document.createElement('div');
+    document.body.appendChild(c2);
+    const sb = new Sidebar(c2);
+    expect(sb.getTab()).toBe('heartbeat');
+    expect(c2.querySelector('.sidebar-heartbeat').style.display).toBe('');
+  });
+
+  it('v2.15.0: onTabChange fires for heartbeat', () => {
+    const onTabChange = vi.fn();
+    const c2 = document.createElement('div');
+    new Sidebar(c2, { onTabChange });
+    c2.querySelector('[data-tab="heartbeat"]').click();
+    expect(onTabChange).toHaveBeenCalledWith('heartbeat');
   });
 });

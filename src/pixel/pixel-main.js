@@ -21,6 +21,7 @@ import { CommandComposer } from './CommandComposer.js';
 import { CommandClient } from './CommandClient.js';
 import { CommandHistory } from './CommandHistory.js';
 import { UsageView } from './UsageView.js';
+import { HeartbeatView } from './HeartbeatView.js';
 import { ArtifactComposer } from './ArtifactComposer.js';
 import {
   loadMapConfig, saveMapConfig, emptyMapConfig,
@@ -114,8 +115,8 @@ async function main() {
   const historyContainer = sidebar.getHistoryContainer();
   const history = historyContainer ? new CommandHistory(historyContainer, {
     client: commandClient,
-    onAgentOutput: (name, text) => {
-      if (name && text) renderer.enqueueBubble(name, text);
+    onAgentOutput: (name, text, opts) => {
+      if (name && text) renderer.enqueueBubble(name, text, opts);
     },
     // v2.13.0: count 变化 → sidebar 工具行更新
     onCountChange: (n) => sidebar.setHistoryCount(n),
@@ -184,7 +185,7 @@ async function main() {
         const mode = payload.body?.mode || 'pipeline';
         const agents = payload.body?.participants || (payload.body?.steps || []).map(s => s.agent);
         const prompt = payload.body?.topic || (payload.body?.steps?.[0]?.prompt || '').slice(0, 80);
-        if (history) history.pushSubmission({ kind: 'pipeline', mode, agents, prompt }, response);
+        if (history) history.pushSubmission({ kind: 'pipeline', mode, agents, prompt, _artifacts: payload._artifacts }, response);
       },
     });
 
@@ -201,6 +202,11 @@ async function main() {
   const usageContainer = sidebar.getUsageContainer();
   const usage = usageContainer ? new UsageView(usageContainer) : null;
   if (usage) usage.start();
+
+  // === v2.15.0: Heartbeat tab ===
+  const heartbeatContainer = sidebar.getHeartbeatContainer();
+  const heartbeat = heartbeatContainer ? new HeartbeatView(heartbeatContainer) : null;
+  if (heartbeat) heartbeat.start();
 
   const editor = (editBtnEl && editToolbarEl) ? new MapEditor(canvas, editToolbarEl, {
     onSave: async () => {
