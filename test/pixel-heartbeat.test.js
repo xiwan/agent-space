@@ -34,12 +34,31 @@ const SAMPLE_LOGS = {
   ],
 };
 
+const SAMPLE_CONTEXTS = {
+  contexts: [
+    { text: 'demo at 2pm', ttl: 3, created_at: NOW_MS / 1000 - 30 },
+    { text: 'remember to be friendly', ttl: 5, created_at: NOW_MS / 1000 - 120 },
+  ],
+};
+
 function makeFetch(map) {
   return vi.fn(async (url, opts) => {
     const key = `${(opts && opts.method) || 'GET'} ${url}`;
     const handler = map[key];
     if (!handler) throw new Error(`unhandled fetch: ${key}`);
     return handler(opts);
+  });
+}
+
+/**
+ * v2.16.0: 默认 happy-path mock — state + logs + context 三件套.
+ */
+function defaultMock(overrides = {}) {
+  return makeFetch({
+    'GET /api/heartbeat':         async () => okResp(SAMPLE_STATE),
+    'GET /api/heartbeat/logs':    async () => okResp(SAMPLE_LOGS),
+    'GET /api/heartbeat/context': async () => okResp({ contexts: [] }),
+    ...overrides,
   });
 }
 
@@ -117,6 +136,7 @@ describe('HeartbeatView render', () => {
     const f = makeFetch({
       'GET /api/heartbeat':       async () => okResp(SAMPLE_STATE),
       'GET /api/heartbeat/logs':  async () => okResp(SAMPLE_LOGS),
+      'GET /api/heartbeat/context': async () => okResp({ contexts: [] }),
     });
     const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
     await v.tickOnce();
@@ -140,6 +160,7 @@ describe('HeartbeatView render', () => {
     const f = makeFetch({
       'GET /api/heartbeat':       async () => okResp(SAMPLE_STATE),
       'GET /api/heartbeat/logs':  async () => okResp(SAMPLE_LOGS),
+      'GET /api/heartbeat/context': async () => okResp({ contexts: [] }),
     });
     const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
     await v.tickOnce();
@@ -162,6 +183,7 @@ describe('HeartbeatView render', () => {
     const f = makeFetch({
       'GET /api/heartbeat':       async () => okResp(SAMPLE_STATE),
       'GET /api/heartbeat/logs':  async () => okResp(SAMPLE_LOGS),
+      'GET /api/heartbeat/context': async () => okResp({ contexts: [] }),
     });
     const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
     await v.tickOnce();
@@ -178,6 +200,7 @@ describe('HeartbeatView render', () => {
     const f = makeFetch({
       'GET /api/heartbeat':       async () => okResp(SAMPLE_STATE),
       'GET /api/heartbeat/logs':  async () => okResp(SAMPLE_LOGS),
+      'GET /api/heartbeat/context': async () => okResp({ contexts: [] }),
     });
     const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
     await v.tickOnce();
@@ -191,6 +214,7 @@ describe('HeartbeatView render', () => {
     const f = makeFetch({
       'GET /api/heartbeat':       async () => okResp(SAMPLE_STATE),
       'GET /api/heartbeat/logs':  async () => okResp(SAMPLE_LOGS),
+      'GET /api/heartbeat/context': async () => okResp({ contexts: [] }),
     });
     const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
     await v.tickOnce();
@@ -208,6 +232,7 @@ describe('HeartbeatView render', () => {
     const f = makeFetch({
       'GET /api/heartbeat':       async () => failResp(500),
       'GET /api/heartbeat/logs':  async () => okResp(SAMPLE_LOGS),
+      'GET /api/heartbeat/context': async () => okResp({ contexts: [] }),
     });
     const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
     await v.tickOnce();
@@ -220,6 +245,7 @@ describe('HeartbeatView render', () => {
     const f = makeFetch({
       'GET /api/heartbeat':       async () => okResp(SAMPLE_STATE),
       'GET /api/heartbeat/logs':  async () => okResp(SAMPLE_LOGS),
+      'GET /api/heartbeat/context': async () => okResp({ contexts: [] }),
       'PUT /api/heartbeat/interval': async () => okResp({ interval: 120, previous: 60 }),
     });
     const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
@@ -239,6 +265,7 @@ describe('HeartbeatView render', () => {
     const f = makeFetch({
       'GET /api/heartbeat':       async () => okResp(SAMPLE_STATE),
       'GET /api/heartbeat/logs':  async () => okResp(SAMPLE_LOGS),
+      'GET /api/heartbeat/context': async () => okResp({ contexts: [] }),
       'PUT /api/heartbeat/interval': async () => okResp({ error: 'interval 30 not in allowed_intervals' }),
     });
     const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
@@ -255,6 +282,7 @@ describe('HeartbeatView render', () => {
     const f = makeFetch({
       'GET /api/heartbeat':       async () => okResp(SAMPLE_STATE),
       'GET /api/heartbeat/logs':  async () => okResp(SAMPLE_LOGS),
+      'GET /api/heartbeat/context': async () => okResp({ contexts: [] }),
       'PUT /api/heartbeat/interval': async () => { throw new Error('network down'); },
     });
     const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
@@ -289,6 +317,7 @@ describe('HeartbeatView render', () => {
     const f = makeFetch({
       'GET /api/heartbeat':       async () => okResp(SAMPLE_STATE),
       'GET /api/heartbeat/logs':  async () => okResp(SAMPLE_LOGS),
+      'GET /api/heartbeat/context': async () => okResp({ contexts: [] }),
     });
     const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
     await v.tickOnce();
@@ -296,5 +325,279 @@ describe('HeartbeatView render', () => {
     container.querySelector('.hb-refresh').click();
     await flush();
     expect(f.mock.calls.length).toBeGreaterThan(fetchCountBefore);
+  });
+});
+
+// ============================================================
+// v2.16.0: Intervene 折叠区
+// ============================================================
+describe('HeartbeatView v2.16.0 — Intervene', () => {
+  let container;
+  beforeEach(() => {
+    try { localStorage.clear(); } catch {}
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+  afterEach(() => {
+    container.remove();
+  });
+
+  it('Intervene region is collapsed by default', () => {
+    new HeartbeatView(container, { fetchImpl: defaultMock() });
+    const toggle = container.querySelector('[data-toggle="intervene"]');
+    expect(toggle).not.toBeNull();
+    expect(toggle.textContent).toMatch(/▸ Intervene/);
+    expect(container.querySelector('.hb-intervene-body')).toBeNull();
+  });
+
+  it('clicking toggle expands; localStorage persists', async () => {
+    const v = new HeartbeatView(container, { fetchImpl: defaultMock() });
+    container.querySelector('[data-toggle="intervene"]').click();
+    expect(container.querySelector('.hb-intervene-body')).not.toBeNull();
+    expect(container.querySelector('[data-toggle="intervene"]').textContent).toMatch(/▾/);
+    expect(localStorage.getItem('pixel.heartbeatInterveneOpen')).toBe('true');
+    // 第二次 click 收起
+    container.querySelector('[data-toggle="intervene"]').click();
+    expect(container.querySelector('.hb-intervene-body')).toBeNull();
+    expect(localStorage.getItem('pixel.heartbeatInterveneOpen')).toBe('false');
+  });
+
+  it('localStorage open=true → expanded on construct', () => {
+    localStorage.setItem('pixel.heartbeatInterveneOpen', 'true');
+    new HeartbeatView(container, { fetchImpl: defaultMock() });
+    expect(container.querySelector('.hb-intervene-body')).not.toBeNull();
+  });
+
+  it('renders inject form + ping select + clear button when expanded (after fetch)', async () => {
+    const f = defaultMock();
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    v.toggleIntervene();
+    await v.tickOnce();
+    expect(container.querySelector('.hb-inject-text')).not.toBeNull();
+    expect(container.querySelector('.hb-inject-ttl')).not.toBeNull();
+    expect(container.querySelector('.hb-inject-btn')).not.toBeNull();
+    const pingSel = container.querySelector('.hb-ping-select');
+    expect(pingSel).not.toBeNull();
+    const opts = [...pingSel.querySelectorAll('option')].map(o => o.value);
+    expect(opts).toEqual(['claude', 'kiro', 'qwen']);
+    expect(container.querySelector('.hb-ping-btn')).not.toBeNull();
+    expect(container.querySelector('.hb-clear-btn')).not.toBeNull();
+  });
+
+  it('renders active context list with text + ttl + ago', async () => {
+    const f = defaultMock({
+      'GET /api/heartbeat/context': async () => okResp(SAMPLE_CONTEXTS),
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    v.toggleIntervene();
+    await v.tickOnce();
+    const items = container.querySelectorAll('.hb-context-item');
+    expect(items.length).toBe(2);
+    expect(items[0].querySelector('.hb-context-text').textContent).toBe('demo at 2pm');
+    expect(items[0].querySelector('.hb-context-meta').textContent).toMatch(/ttl 3/);
+    expect(items[0].querySelector('.hb-context-meta').textContent).toMatch(/30s ago/);
+  });
+
+  it('empty context list shows placeholder', async () => {
+    const v = new HeartbeatView(container, { fetchImpl: defaultMock(), nowMs: () => NOW_MS });
+    v.toggleIntervene();
+    await v.tickOnce();
+    expect(container.querySelector('.hb-context-empty')).not.toBeNull();
+    expect(container.querySelector('.hb-clear-btn').disabled).toBe(true);
+  });
+
+  it('inject success path: status ok + active_contexts + clears textarea', async () => {
+    const f = defaultMock({
+      'POST /api/heartbeat/context': async () => okResp({ status: 'ok', ttl: 3, active_contexts: 1 }),
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    v.toggleIntervene();
+    await v.tickOnce();
+    const txt = container.querySelector('.hb-inject-text');
+    txt.value = 'hello world';
+    txt.dispatchEvent(new Event('input'));
+    await v.injectContext();
+    await flush();
+    const status = container.querySelector('.hb-intervene-status');
+    expect(status.classList.contains('hb-intervene-ok')).toBe(true);
+    expect(status.textContent).toMatch(/injected.*ttl 3.*1 active/);
+    // textarea 清空
+    expect(container.querySelector('.hb-inject-text').value).toBe('');
+  });
+
+  it('inject empty text → local validation, no fetch', async () => {
+    const post = vi.fn();
+    const f = defaultMock({
+      'POST /api/heartbeat/context': post,
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    v.toggleIntervene();
+    await v.tickOnce();
+    await v.injectContext();
+    expect(post).not.toHaveBeenCalled();
+    const status = container.querySelector('.hb-intervene-status');
+    expect(status.classList.contains('hb-intervene-error')).toBe(true);
+    expect(status.textContent).toMatch(/text is required/);
+  });
+
+  it('inject server 400 → status error', async () => {
+    const f = defaultMock({
+      'POST /api/heartbeat/context': async () => ({
+        ok: false, status: 400, json: async () => ({ error: 'text is required' }),
+      }),
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    v.toggleIntervene();
+    await v.tickOnce();
+    const txt = container.querySelector('.hb-inject-text');
+    txt.value = 'something';
+    txt.dispatchEvent(new Event('input'));
+    await v.injectContext();
+    await flush();
+    const status = container.querySelector('.hb-intervene-status');
+    expect(status.classList.contains('hb-intervene-error')).toBe(true);
+  });
+
+  it('ttl input clamps to 1..100', () => {
+    const v = new HeartbeatView(container, { fetchImpl: defaultMock() });
+    v.toggleIntervene();
+    v.setInjectTtl(0);
+    expect(v.getState().injectTtl).toBe(1);
+    v.setInjectTtl(500);
+    expect(v.getState().injectTtl).toBe(100);
+    v.setInjectTtl(7);
+    expect(v.getState().injectTtl).toBe(7);
+  });
+
+  it('clear contexts: confirm → DELETE → contexts emptied', async () => {
+    let deleted = false;
+    const f = defaultMock({
+      'GET /api/heartbeat/context': async () => okResp(deleted ? { contexts: [] } : SAMPLE_CONTEXTS),
+      'DELETE /api/heartbeat/context': async () => { deleted = true; return okResp({ cleared: 2 }); },
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    v.toggleIntervene();
+    await v.tickOnce();
+    expect(container.querySelectorAll('.hb-context-item').length).toBe(2);
+
+    const oldConfirm = window.confirm;
+    window.confirm = () => true;
+    try {
+      await v.clearContexts();
+      await flush();
+    } finally {
+      window.confirm = oldConfirm;
+    }
+    const status = container.querySelector('.hb-intervene-status');
+    expect(status.classList.contains('hb-intervene-ok')).toBe(true);
+    expect(status.textContent).toMatch(/cleared 2/);
+    expect(container.querySelector('.hb-context-empty')).not.toBeNull();
+  });
+
+  it('clear contexts: confirm cancelled → no DELETE', async () => {
+    const del = vi.fn();
+    const f = defaultMock({
+      'GET /api/heartbeat/context': async () => okResp(SAMPLE_CONTEXTS),
+      'DELETE /api/heartbeat/context': del,
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    v.toggleIntervene();
+    await v.tickOnce();
+    const oldConfirm = window.confirm;
+    window.confirm = () => false;
+    try {
+      await v.clearContexts();
+    } finally {
+      window.confirm = oldConfirm;
+    }
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it('ping success unshifts a new log entry, no wait for next poll', async () => {
+    const f = defaultMock({
+      'POST /api/heartbeat/claude': async () => okResp({
+        agent: 'claude', silent: false, response: 'hello team!',
+        duration: 4.5, snapshot: SAMPLE_STATE.snapshot,
+      }),
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    v.toggleIntervene();
+    await v.tickOnce();
+    // hideSilent default true, 但我们 ping 拿的是 non-silent → 立即显示
+    v.setPingAgent('claude');
+    await v.pingAgent();
+    await flush();
+    const status = container.querySelector('.hb-intervene-status');
+    expect(status.classList.contains('hb-intervene-ok')).toBe(true);
+    expect(status.textContent).toMatch(/claude spoke/);
+    // 第一张卡片是新 ping (ts 现在最大)
+    const firstCard = container.querySelector('.hb-card');
+    expect(firstCard.querySelector('.hb-card-agent').textContent).toBe('claude');
+    expect(firstCard.querySelector('.hb-card-body').textContent).toBe('hello team!');
+  });
+
+  it('ping silent agent shows "silent" status', async () => {
+    const f = defaultMock({
+      'POST /api/heartbeat/kiro': async () => okResp({
+        agent: 'kiro', silent: true, response: null, duration: 3.0,
+      }),
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    v.toggleIntervene();
+    await v.tickOnce();
+    v.setPingAgent('kiro');
+    await v.pingAgent();
+    await flush();
+    const status = container.querySelector('.hb-intervene-status');
+    expect(status.classList.contains('hb-intervene-ok')).toBe(true);
+    expect(status.textContent).toMatch(/kiro silent/);
+  });
+
+  it('ping 404 → error status', async () => {
+    const f = defaultMock({
+      'POST /api/heartbeat/ghost': async () => ({
+        ok: false, status: 404, json: async () => ({ error: 'agent not found: ghost' }),
+      }),
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    v.toggleIntervene();
+    await v.tickOnce();
+    v.setPingAgent('ghost');
+    await v.pingAgent();
+    await flush();
+    const status = container.querySelector('.hb-intervene-status');
+    expect(status.classList.contains('hb-intervene-error')).toBe(true);
+    expect(status.textContent).toMatch(/ghost.*agent not found/);
+  });
+
+  it('ping with no agent selected → local error', async () => {
+    const post = vi.fn();
+    const f = defaultMock({ 'POST /api/heartbeat/anyone': post });
+    // enabledAgents 空
+    const f2 = makeFetch({
+      'GET /api/heartbeat':         async () => okResp({ ...SAMPLE_STATE, enabled_agents: [] }),
+      'GET /api/heartbeat/logs':    async () => okResp(SAMPLE_LOGS),
+      'GET /api/heartbeat/context': async () => okResp({ contexts: [] }),
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f2, nowMs: () => NOW_MS });
+    v.toggleIntervene();
+    await v.tickOnce();
+    v.setPingAgent(null);
+    await v.pingAgent();
+    const status = container.querySelector('.hb-intervene-status');
+    expect(status.classList.contains('hb-intervene-error')).toBe(true);
+    expect(status.textContent).toMatch(/no agent selected/);
+  });
+
+  it('tickOnce fetches all 3 endpoints (state + logs + context)', async () => {
+    const f = defaultMock();
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    await v.tickOnce();
+    const urls = f.mock.calls.map(c => c[0]).sort();
+    expect(urls).toEqual([
+      '/api/heartbeat',
+      '/api/heartbeat/context',
+      '/api/heartbeat/logs',
+    ]);
   });
 });

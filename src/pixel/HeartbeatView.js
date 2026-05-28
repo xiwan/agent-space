@@ -1,23 +1,34 @@
 /**
- * HeartbeatView — Sidebar 第 4 个 tab, 显示 acp-bridge 心跳 loop 自动触发的 agent
- * 闲聊内容, 并允许调整 heartbeat interval (v2.15.0).
+ * HeartbeatView — Sidebar 第 4 个 tab (v2.15.0).
  *
  * 数据源:
- *   GET  /api/heartbeat        → { interval, allowed_intervals, enabled_agents, snapshot }
- *   GET  /api/heartbeat/logs   → { total, logs: [{ ts, agent, silent, duration, response, prompt_preview }, ...] }
- *   PUT  /api/heartbeat/interval { interval: <s> } → { interval, previous } 或 { error }
+ *   GET  /api/heartbeat          → { interval, allowed_intervals, enabled_agents, snapshot }
+ *   GET  /api/heartbeat/logs     → { total, logs: [{ts, agent, silent, duration, response, prompt_preview}] }
+ *   PUT  /api/heartbeat/interval { interval } → { interval, previous } 或 { error }
+ *
+ * v2.16.0 新增 Intervene 折叠区 (主动干预):
+ *   GET    /api/heartbeat/context           → { contexts: [{text, ttl, created_at}] }
+ *   POST   /api/heartbeat/context  {text, ttl} → { status:'ok', ttl, active_contexts } | 400 {error}
+ *   DELETE /api/heartbeat/context           → { cleared:<n> }
+ *   POST   /api/heartbeat/{agent_name}      → { agent, silent, response, snapshot, duration }
  *
  * 注意:
- *   - acp-bridge 错误响应 HTTP 仍是 200, body 含 error 字段, 需自己判.
- *   - allowed_intervals 是白名单 (e.g. [60, 120, 300, 600]), 用它做 select 选项.
+ *   - acp-bridge interval 错误 HTTP 200 + body.error; context inject 错误 HTTP 400 + body.error.
+ *     都按 (!ok || body.error) 一并判.
+ *   - allowed_intervals 是白名单, 用它做 select 选项.
  *   - snapshot.agents[name] 含 busy/idle, 给 log 卡片打 chip.
  *   - logs 里 silent=true 的项 response 为 null (LLM 回了 [SILENT]).
  *   - 进度条: 距上次 fetch 完成 → 下次 fetch 之间, 0% → 100% 平滑过渡;
  *     fetching 期间换成 indeterminate 动画.
+ *   - 默认 hideSilent=true (silent log 占多数), v2.16.0 inject context 是看到非 silent 内容的解药.
  */
 
 const POLL_INTERVAL_MS = 10000;
 const SILENT_LS_KEY = 'pixel.heartbeatHideSilent';
+const INTERVENE_LS_KEY = 'pixel.heartbeatInterveneOpen';
+const TTL_DEFAULT = 3;
+const TTL_MIN = 1;
+const TTL_MAX = 100;
 const INTERVAL_LABELS = {
   30: '30s',
   60: '1 min',
@@ -79,6 +90,14 @@ export class HeartbeatView {
       }
     } catch {}
 
+    let interveneOpen = false;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const v = localStorage.getItem(INTERVENE_LS_KEY);
+        if (v === 'true') interveneOpen = true;
+      }
+    } catch {}
+
     this._state = {
       interval: null,
       allowedIntervals: [],
@@ -86,16 +105,25 @@ export class HeartbeatView {
       snapshot: null,
       logs: [],
       total: 0,
+      contexts: [],                    // v2.16.0: 注入的话题列表
       hideSilent,
-      expandedPrompt: new Set(), // log ts (string) 集合
-      lastError: null,           // logs / state 拉取错误
-      intervalChange: null,      // {kind:'ok'|'error', text} 一次性显示
+      interveneOpen,                   // v2.16.0: 折叠区是否展开
+      injectText: '',                  // v2.16.0: textarea 实时内容 (controlled)
+      injectTtl: TTL_DEFAULT,          // v2.16.0
+      pingAgent: null,                 // v2.16.0: 选中要 ping 的 agent
+      pingPending: false,              // v2.16.0: ping in-flight
+      injectPending: false,            // v2.16.0
+      clearPending: false,             // v2.16.0
+      expandedPrompt: new Set(),       // log ts (string) 集合
+      lastError: null,                 // logs / state / contexts 拉取错误
+      intervalChange: null,            // {kind:'ok'|'error'|'pending', text} 一次性显示
+      interveneStatus: null,           // v2.16.0: {kind, text} 一次性显示
       lastFetchedAt: null,
       fetching: false,
       pendingIntervalChange: false,
     };
     this._timer = null;
-    this._progressTimer = null; // 进度条 60fps RAF / setInterval
+    this._progressTimer = null;
 
     this._render();
   }
@@ -126,7 +154,7 @@ export class HeartbeatView {
   }
 
   /**
-   * 拉一次 /heartbeat + /heartbeat/logs (并行).
+   * 拉一次 /heartbeat + /heartbeat/logs + /heartbeat/context (并行).
    */
   async tickOnce() {
     if (!this._fetch) return;
@@ -134,12 +162,13 @@ export class HeartbeatView {
     this._state.fetching = true;
     this._renderControls();
     this._startFetchingProgress();
-    let stateOk = false, logsOk = false;
+    let stateOk = false, logsOk = false, ctxOk = false;
     let firstError = null;
     try {
-      const [stateR, logsR] = await Promise.allSettled([
+      const [stateR, logsR, ctxR] = await Promise.allSettled([
         this._fetch('/api/heartbeat'),
         this._fetch('/api/heartbeat/logs'),
+        this._fetch('/api/heartbeat/context'),
       ]);
       // /heartbeat
       if (stateR.status === 'fulfilled') {
@@ -171,11 +200,24 @@ export class HeartbeatView {
       } else {
         firstError = firstError || (logsR.reason?.message || 'GET /api/heartbeat/logs failed');
       }
+      // v2.16.0: /heartbeat/context
+      if (ctxR.status === 'fulfilled') {
+        const r = ctxR.value;
+        if (r && r.ok) {
+          const data = await r.json();
+          this._state.contexts = Array.isArray(data.contexts) ? data.contexts : [];
+          ctxOk = true;
+        } else {
+          firstError = firstError || `GET /api/heartbeat/context → ${r ? r.status : '?'}`;
+        }
+      } else {
+        firstError = firstError || (ctxR.reason?.message || 'GET /api/heartbeat/context failed');
+      }
     } finally {
       this._state.fetching = false;
-      // 任一成功就算 lastFetchedAt 更新; 全失败保留旧值, 仅记 error
-      if (stateOk || logsOk) this._state.lastFetchedAt = this._now();
-      this._state.lastError = (stateOk && logsOk) ? null : firstError;
+      // 任一成功就算 lastFetchedAt 更新
+      if (stateOk || logsOk || ctxOk) this._state.lastFetchedAt = this._now();
+      this._state.lastError = (stateOk && logsOk && ctxOk) ? null : firstError;
       this._render();
       this._startCountdownProgress();
     }
@@ -215,6 +257,158 @@ export class HeartbeatView {
       // 立即重拉 /heartbeat 同步 (非阻塞)
       this._render();
       this.tickOnce();
+    }
+  }
+
+  // ============================================================
+  // v2.16.0: Intervene 折叠区
+  // ============================================================
+
+  /**
+   * 切换 Intervene 折叠区开合.
+   */
+  toggleIntervene() {
+    this._state.interveneOpen = !this._state.interveneOpen;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(INTERVENE_LS_KEY, this._state.interveneOpen ? 'true' : 'false');
+      }
+    } catch {}
+    this._render();
+  }
+
+  setInjectText(t) { this._state.injectText = String(t || ''); }
+  setInjectTtl(n) {
+    const v = parseInt(n, 10);
+    if (!Number.isFinite(v)) return;
+    this._state.injectTtl = Math.max(TTL_MIN, Math.min(TTL_MAX, v));
+  }
+  setPingAgent(name) { this._state.pingAgent = name || null; }
+
+  /**
+   * POST /heartbeat/context — 注入话题, 让所有 agent 下次 N 次 heartbeat 看到.
+   * acp-bridge 错误是 HTTP 400 + body.error.
+   */
+  async injectContext() {
+    if (!this._fetch) return;
+    const text = (this._state.injectText || '').trim();
+    if (!text) {
+      this._state.interveneStatus = { kind: 'error', text: 'inject failed: text is required' };
+      this._render();
+      return;
+    }
+    if (this._state.injectPending) return;
+    const ttl = Math.max(TTL_MIN, Math.min(TTL_MAX, this._state.injectTtl | 0));
+    this._state.injectPending = true;
+    this._state.interveneStatus = { kind: 'pending', text: `injecting (ttl ${ttl})…` };
+    this._render();
+    try {
+      const r = await this._fetch('/api/heartbeat/context', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, ttl }),
+      });
+      let body = null;
+      try { body = await r.json(); } catch {}
+      if (!r || !r.ok || !body || body.error) {
+        const msg = (body && body.error) || (r ? `HTTP ${r.status}` : 'no response');
+        this._state.interveneStatus = { kind: 'error', text: `inject failed: ${msg}` };
+      } else {
+        this._state.interveneStatus = {
+          kind: 'ok',
+          text: `injected (ttl ${body.ttl ?? ttl}, ${body.active_contexts ?? '?'} active)`,
+        };
+        this._state.injectText = ''; // 清空输入
+      }
+    } catch (e) {
+      this._state.interveneStatus = { kind: 'error', text: `inject failed: ${e.message || e}` };
+    } finally {
+      this._state.injectPending = false;
+      this._render();
+      this.tickOnce(); // 立即刷新 contexts list
+    }
+  }
+
+  /**
+   * DELETE /heartbeat/context — 清空所有注入话题.
+   */
+  async clearContexts(skipConfirm = false) {
+    if (!this._fetch) return;
+    if (this._state.clearPending) return;
+    if (!skipConfirm && typeof window !== 'undefined' && typeof window.confirm === 'function') {
+      const ok = window.confirm('Clear all injected contexts? This affects every agent on next heartbeat.');
+      if (!ok) return;
+    }
+    this._state.clearPending = true;
+    this._state.interveneStatus = { kind: 'pending', text: 'clearing…' };
+    this._render();
+    try {
+      const r = await this._fetch('/api/heartbeat/context', { method: 'DELETE' });
+      let body = null;
+      try { body = await r.json(); } catch {}
+      if (!r || !r.ok) {
+        this._state.interveneStatus = { kind: 'error', text: `clear failed: HTTP ${r ? r.status : '?'}` };
+      } else {
+        const n = (body && body.cleared) ?? 0;
+        this._state.interveneStatus = { kind: 'ok', text: `cleared ${n} context${n === 1 ? '' : 's'}` };
+        this._state.contexts = [];
+      }
+    } catch (e) {
+      this._state.interveneStatus = { kind: 'error', text: `clear failed: ${e.message || e}` };
+    } finally {
+      this._state.clearPending = false;
+      this._render();
+      this.tickOnce();
+    }
+  }
+
+  /**
+   * POST /heartbeat/{agent} — 立即触发某 agent 的 heartbeat (不等 interval).
+   * 成功后把 response 即刻 unshift 到 logs 头, 不等下次轮询.
+   */
+  async pingAgent(name) {
+    if (!this._fetch) return;
+    const target = name || this._state.pingAgent;
+    if (!target) {
+      this._state.interveneStatus = { kind: 'error', text: 'ping failed: no agent selected' };
+      this._render();
+      return;
+    }
+    if (this._state.pingPending) return;
+    this._state.pingPending = true;
+    this._state.interveneStatus = { kind: 'pending', text: `pinging ${target}…` };
+    this._render();
+    try {
+      const r = await this._fetch(`/api/heartbeat/${encodeURIComponent(target)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      let body = null;
+      try { body = await r.json(); } catch {}
+      if (!r || !r.ok || !body || body.error) {
+        const msg = (body && body.error) || (r ? `HTTP ${r.status}` : 'no response');
+        this._state.interveneStatus = { kind: 'error', text: `ping ${target} failed: ${msg}` };
+      } else {
+        const tag = body.silent ? 'silent' : 'spoke';
+        this._state.interveneStatus = { kind: 'ok', text: `${target} ${tag}` };
+        // 把这次 ping 结果即刻塞进 logs 头, 不等下次轮询
+        const entry = {
+          ts: this._now() / 1000,
+          agent: body.agent || target,
+          silent: !!body.silent,
+          duration: body.duration ?? null,
+          response: body.silent ? null : (body.response ?? ''),
+          prompt_preview: body.prompt_preview || '',
+        };
+        this._state.logs = [entry, ...(this._state.logs || [])];
+        if (body.snapshot) this._state.snapshot = body.snapshot;
+      }
+    } catch (e) {
+      this._state.interveneStatus = { kind: 'error', text: `ping ${target} failed: ${e.message || e}` };
+    } finally {
+      this._state.pingPending = false;
+      this._render();
     }
   }
 
@@ -264,6 +458,7 @@ export class HeartbeatView {
   // ============================================================
 
   _render() {
+    const focusInfo = this._captureFocus();
     const { interval, allowedIntervals, lastError, fetching, lastFetchedAt } = this._state;
 
     const intervals = (allowedIntervals && allowedIntervals.length)
@@ -298,12 +493,42 @@ export class HeartbeatView {
       </div>
       <div class="hb-progress"><div class="hb-progress-bar"></div></div>
       ${this._renderIntervalChange()}
+      ${this._renderIntervene()}
       ${errBlock}
       <div class="hb-logs"></div>
     `;
     this._wireControls();
+    this._wireIntervene();
     this._renderLogs();
     this._startCountdownProgress();
+    this._restoreFocus(focusInfo);
+  }
+
+  /**
+   * v2.16.0: 跨 _render 保留 textarea/input 焦点 + 光标位置, 防 10s 轮询时光标乱跳.
+   */
+  _captureFocus() {
+    if (typeof document === 'undefined') return null;
+    const el = document.activeElement;
+    if (!el || !this.container.contains(el)) return null;
+    const cls = ['hb-inject-text', 'hb-inject-ttl', 'hb-ping-select'].find(c => el.classList && el.classList.contains(c));
+    if (!cls) return null;
+    return {
+      cls,
+      selStart: el.selectionStart != null ? el.selectionStart : null,
+      selEnd: el.selectionEnd != null ? el.selectionEnd : null,
+    };
+  }
+  _restoreFocus(info) {
+    if (!info) return;
+    const el = this.container.querySelector('.' + info.cls);
+    if (!el) return;
+    try {
+      el.focus();
+      if (info.selStart != null && el.setSelectionRange) {
+        el.setSelectionRange(info.selStart, info.selEnd);
+      }
+    } catch {}
   }
 
   _renderControls() {
@@ -330,6 +555,117 @@ export class HeartbeatView {
               : ic.kind === 'error' ? 'hb-interval-change hb-interval-error'
               : 'hb-interval-change hb-interval-pending';
     return `<div class="${cls}">${escapeHtml(ic.text)}</div>`;
+  }
+
+  // ============================================================
+  // v2.16.0: Intervene render
+  // ============================================================
+
+  _renderIntervene() {
+    const open = this._state.interveneOpen;
+    const arrow = open ? '▾' : '▸';
+    const head = `<div class="hb-intervene-toggle" data-toggle="intervene">${arrow} Intervene</div>`;
+    if (!open) return `<div class="hb-intervene">${head}</div>`;
+
+    const enabled = this._state.enabledAgents || [];
+    const pingTarget = this._state.pingAgent || enabled[0] || '';
+    const agentOpts = enabled.length
+      ? enabled.map(a => `<option value="${escapeAttr(a)}"${a === pingTarget ? ' selected' : ''}>${escapeHtml(a)}</option>`).join('')
+      : '<option value="">(none)</option>';
+
+    const status = this._renderInterveneStatus();
+    const ctxList = this._renderContextList();
+    const txt = escapeHtml(this._state.injectText || '');
+    const ttl = this._state.injectTtl;
+    const injecting = this._state.injectPending;
+    const clearing = this._state.clearPending;
+    const pinging = this._state.pingPending;
+
+    const body = `
+      <div class="hb-intervene-body">
+        <div class="hb-intervene-section">
+          <label class="hb-intervene-label">Inject context (all agents, next N heartbeats)</label>
+          <textarea class="hb-inject-text" rows="2" placeholder="e.g. demo starts at 2pm — say something fun" ${injecting ? 'disabled' : ''}>${txt}</textarea>
+          <div class="hb-intervene-row">
+            <label class="hb-ttl-label">ttl</label>
+            <input type="number" class="hb-inject-ttl" min="${TTL_MIN}" max="${TTL_MAX}" step="1" value="${ttl}" ${injecting ? 'disabled' : ''}>
+            <button class="hb-inject-btn" type="button" ${injecting ? 'disabled' : ''}>${injecting ? '…' : 'Inject'}</button>
+          </div>
+        </div>
+
+        <div class="hb-intervene-section">
+          <div class="hb-intervene-row hb-intervene-row-head">
+            <label class="hb-intervene-label">Active contexts</label>
+            <button class="hb-clear-btn" type="button" ${clearing || (this._state.contexts || []).length === 0 ? 'disabled' : ''}>${clearing ? '…' : 'Clear all'}</button>
+          </div>
+          ${ctxList}
+        </div>
+
+        <div class="hb-intervene-section">
+          <label class="hb-intervene-label">Ping now (skip interval)</label>
+          <div class="hb-intervene-row">
+            <select class="hb-ping-select" ${pinging || enabled.length === 0 ? 'disabled' : ''}>${agentOpts}</select>
+            <button class="hb-ping-btn" type="button" ${pinging || enabled.length === 0 ? 'disabled' : ''}>${pinging ? '…' : 'Ping'}</button>
+          </div>
+        </div>
+
+        ${status}
+      </div>
+    `;
+    return `<div class="hb-intervene hb-intervene-open">${head}${body}</div>`;
+  }
+
+  _renderInterveneStatus() {
+    const s = this._state.interveneStatus;
+    if (!s) return '';
+    const cls = s.kind === 'ok' ? 'hb-intervene-status hb-intervene-ok'
+              : s.kind === 'error' ? 'hb-intervene-status hb-intervene-error'
+              : 'hb-intervene-status hb-intervene-pending';
+    return `<div class="${cls}">${escapeHtml(s.text)}</div>`;
+  }
+
+  _renderContextList() {
+    const ctxs = this._state.contexts || [];
+    if (ctxs.length === 0) {
+      return `<div class="hb-context-empty">no active contexts</div>`;
+    }
+    const now = this._now();
+    return `<div class="hb-context-list">${ctxs.map(c => {
+      const ago = formatRelTs(c.created_at, now);
+      const text = String(c.text || '');
+      return `
+        <div class="hb-context-item">
+          <div class="hb-context-text">${escapeHtml(text)}</div>
+          <div class="hb-context-meta">ttl ${c.ttl ?? '?'} · ${escapeHtml(ago)}</div>
+        </div>
+      `;
+    }).join('')}</div>`;
+  }
+
+  _wireIntervene() {
+    const toggle = this.container.querySelector('[data-toggle="intervene"]');
+    if (toggle) toggle.addEventListener('click', () => this.toggleIntervene());
+    if (!this._state.interveneOpen) return;
+
+    const txt = this.container.querySelector('.hb-inject-text');
+    if (txt) txt.addEventListener('input', (e) => this.setInjectText(e.target.value));
+    const ttl = this.container.querySelector('.hb-inject-ttl');
+    if (ttl) {
+      ttl.addEventListener('change', (e) => {
+        this.setInjectTtl(e.target.value);
+        e.target.value = String(this._state.injectTtl); // clamp echo
+      });
+    }
+    const injectBtn = this.container.querySelector('.hb-inject-btn');
+    if (injectBtn) injectBtn.addEventListener('click', () => this.injectContext());
+
+    const clearBtn = this.container.querySelector('.hb-clear-btn');
+    if (clearBtn) clearBtn.addEventListener('click', () => this.clearContexts());
+
+    const pingSel = this.container.querySelector('.hb-ping-select');
+    if (pingSel) pingSel.addEventListener('change', (e) => this.setPingAgent(e.target.value));
+    const pingBtn = this.container.querySelector('.hb-ping-btn');
+    if (pingBtn) pingBtn.addEventListener('click', () => this.pingAgent());
   }
 
   _renderLogs() {

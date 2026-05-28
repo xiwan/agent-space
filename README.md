@@ -15,6 +15,7 @@ Agents walk to their desk when busy, wander around the office when idle. Click a
 - Command Composer: invoke ACP Bridge runs/jobs/pipelines from the UI
 - Sidebar: Agents / History / Usage / Heartbeat tabs
 - Heartbeat tab: live agent chatter feed with interval control + countdown bar
+- Heartbeat Intervene: inject talking-points into all agents (ttl-bounded), or ping a single agent immediately
 - Cross-device map sharing (server-side persistence)
 
 ## Quick Start

@@ -1263,6 +1263,162 @@
       line-height: 1.4;
     }
 
+    /* === v2.16.0: Heartbeat Intervene 折叠区 === */
+    .hb-intervene {
+      background: #0b1220;
+      border: 1px solid #1e293b;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    .hb-intervene-toggle {
+      padding: 6px 10px;
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      color: #cbd5e1;
+      cursor: pointer;
+      user-select: none;
+      font-family: monospace;
+    }
+    .hb-intervene-toggle:hover { color: #e2e8f0; }
+    .hb-intervene-open .hb-intervene-toggle {
+      color: #e2e8f0;
+      border-bottom: 1px solid #1e293b;
+    }
+    .hb-intervene-body {
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .hb-intervene-section {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .hb-intervene-label {
+      font-size: 10px;
+      letter-spacing: 0.05em;
+      color: #94a3b8;
+      text-transform: uppercase;
+    }
+    .hb-intervene-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .hb-intervene-row-head {
+      justify-content: space-between;
+    }
+    .hb-inject-text {
+      width: 100%;
+      background: #1e293b;
+      color: #e2e8f0;
+      border: 1px solid #475569;
+      border-radius: 4px;
+      padding: 5px 8px;
+      font-family: monospace;
+      font-size: 11px;
+      resize: vertical;
+      min-height: 36px;
+      max-height: 120px;
+      box-sizing: border-box;
+      line-height: 1.4;
+    }
+    .hb-inject-text:focus { outline: none; border-color: #60a5fa; }
+    .hb-ttl-label {
+      font-size: 10px;
+      letter-spacing: 0.05em;
+      color: #94a3b8;
+      text-transform: uppercase;
+    }
+    .hb-inject-ttl {
+      width: 56px;
+      background: #1e293b;
+      color: #e2e8f0;
+      border: 1px solid #475569;
+      border-radius: 4px;
+      padding: 3px 6px;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    .hb-inject-ttl:focus { outline: none; border-color: #60a5fa; }
+    .hb-inject-btn,
+    .hb-clear-btn,
+    .hb-ping-btn {
+      background: #1e293b;
+      color: #e2e8f0;
+      border: 1px solid #475569;
+      border-radius: 4px;
+      padding: 3px 12px;
+      font-family: monospace;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .hb-inject-btn:hover { border-color: #60a5fa; }
+    .hb-clear-btn:hover { border-color: #f87171; color: #fca5a5; }
+    .hb-ping-btn:hover { border-color: #34d399; color: #6ee7b7; }
+    .hb-inject-btn:disabled,
+    .hb-clear-btn:disabled,
+    .hb-ping-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .hb-ping-select {
+      flex: 1;
+      background: #1e293b;
+      color: #e2e8f0;
+      border: 1px solid #475569;
+      border-radius: 4px;
+      padding: 3px 6px;
+      font-family: monospace;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .hb-ping-select:focus { outline: none; border-color: #60a5fa; }
+    .hb-context-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-height: 140px;
+      overflow-y: auto;
+    }
+    .hb-context-item {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 3px;
+      padding: 4px 8px;
+    }
+    .hb-context-text {
+      font-size: 11px;
+      color: #cbd5e1;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.4;
+    }
+    .hb-context-meta {
+      font-size: 9px;
+      color: #64748b;
+      margin-top: 2px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .hb-context-empty {
+      font-size: 10px;
+      color: #64748b;
+      font-style: italic;
+      padding: 4px 0;
+    }
+    .hb-intervene-status {
+      font-size: 11px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: monospace;
+    }
+    .hb-intervene-ok      { background: #064e3b; color: #6ee7b7; }
+    .hb-intervene-error   { background: #7f1d1d; color: #fca5a5; }
+    .hb-intervene-pending { background: #1e293b; color: #94a3b8; }
+
     /* === v2.8.0: 移动端完整适配 (≤768px) ===
        - header 紧凑化 (隐藏外链, 标题缩小)
        - canvas 占满宽度, 维持 6:5 比例
