@@ -213,3 +213,13 @@ v2.16.2 phase 6 pre-commit 时发现工作目录有 5 个文件的非本次 scop
 > 改号历史: 2026-05-28 原计划 v2.17.0 → 实际 v2.17.0 被 HeartbeatView UX polish
 > (commit `5e250220`) 占用, stash 顺延 v2.18.0 → 又被 Sidebar Composer merge 占用,
 > 再次顺延 v2.19.0.
+
+### 视觉参考 (本地存档, 不入 git)
+
+`.art-archive/v2.14.2-stash-screenshots/`
+- `history-tab-with-progress-and-artifacts.png` — HISTORY tab 上 sequence pipeline
+  运行态: Progress 折叠日志, GDD artifact 下载链, pending step
+- `canvas-pixel-office-overview.png` — Canvas 主视图, agents 在像素办公室里漫游
+  + 名字标签 + 聊天气泡
+
+取回 stash 实现 SSE / cancel / artifact UI 时, 对照这两张图验证还原度.
