@@ -67,7 +67,7 @@ src/pixel/              — all application modules
   CommandClient.js      — HTTP client for runs/jobs/pipelines
   CommandHistory.js     — persistent history (localStorage)
   Sidebar.js            — tabs, agent cards, selection sync
-  UsageView.js          — /usage token / cache stats, by-model breakdown
+  UsageView.js          — /usage token / cache stats, by-model breakdown, server-fed cost (cache-aware)
   HeartbeatView.js      — /heartbeat logs feed, interval control, countdown bar
   ArtifactComposer.js   — Quick-mode preset pipelines (artifacts.json)
 public/pixel/           — backgrounds + character sprites + maps

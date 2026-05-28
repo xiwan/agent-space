@@ -19,10 +19,11 @@ const SAMPLE = {
   cache_creation_tokens: 724944,
   cache_rate_pct: 38.1,
   avg_duration_s: 4.99,
+  total_cost_usd: 12.3456, // v2.21.0 (acp-bridge v0.23.0)
   by_model: [
-    { model: 'us.anthropic.claude-sonnet-4-6', calls: 112, input_tokens: 2743031, output_tokens: 185369, cached_tokens: 2016309 },
-    { model: 'converse/qwen.qwen3-235b-a22b-2507-v1:0', calls: 392, input_tokens: 980014, output_tokens: 22000, cached_tokens: 0 },
-    { model: 'bedrock/deepseek.v3.2', calls: 107, input_tokens: 1000000, output_tokens: 1500, cached_tokens: 0 },
+    { model: 'us.anthropic.claude-sonnet-4-6', calls: 112, input_tokens: 2743031, output_tokens: 185369, cached_tokens: 2016309, cache_creation_tokens: 724944, cost_usd: 10.20 },
+    { model: 'converse/qwen.qwen3-235b-a22b-2507-v1:0', calls: 392, input_tokens: 980014, output_tokens: 22000, cached_tokens: 0, cache_creation_tokens: 0, cost_usd: 1.85 },
+    { model: 'bedrock/deepseek.v3.2', calls: 107, input_tokens: 1000000, output_tokens: 1500, cached_tokens: 0, cache_creation_tokens: 0, cost_usd: 0.30 },
   ],
 };
 
@@ -209,13 +210,49 @@ describe('UsageView', () => {
     vi.useRealTimers();
   });
 
-  it('cost metric always shows "—" + (not avail) sub label', async () => {
+  it('cost metric shows server-fed total_cost_usd (v2.21.0 + acp-bridge v0.23.0)', async () => {
     const v = new UsageView(container, { fetchImpl: mockOk(SAMPLE), nowMs: nowFn });
     await v.tickOnce();
     const costMetric = container.querySelector('.usage-metric-cost');
     expect(costMetric).not.toBeNull();
-    expect(costMetric.querySelector('.usage-metric-value').textContent).toBe('—');
-    expect(costMetric.querySelector('.usage-metric-sub').textContent).toMatch(/not avail/i);
+    // total_cost_usd: 12.3456 → "$12.35"
+    expect(costMetric.querySelector('.usage-metric-value').textContent).toMatch(/\$12\.\d+/);
+    // sub label is hours (no longer "(not avail)")
+    expect(costMetric.querySelector('.usage-metric-sub').textContent).toMatch(/\(\d+h\)/);
+  });
+
+  it('cost metric falls back to "—" when server omits total_cost_usd (legacy backend)', async () => {
+    const legacy = { ...SAMPLE };
+    delete legacy.total_cost_usd;
+    const v = new UsageView(container, { fetchImpl: mockOk(legacy), nowMs: nowFn });
+    await v.tickOnce();
+    const val = container.querySelector('.usage-metric-cost .usage-metric-value');
+    expect(val.textContent).toBe('—');
+  });
+
+  it('per-model cost chip renders when cost_usd present, hidden otherwise', async () => {
+    const v = new UsageView(container, { fetchImpl: mockOk(SAMPLE), nowMs: nowFn });
+    await v.tickOnce();
+    // SAMPLE 三个 model 都带 cost_usd → 都应该有 .usage-model-cost
+    const chips = [...container.querySelectorAll('.usage-model-cost')];
+    expect(chips.length).toBe(3);
+    expect(chips[0].textContent).toMatch(/\$10\.\d+/);
+    expect(chips[1].textContent).toMatch(/\$1\.8\d/);
+    expect(chips[2].textContent).toMatch(/\$0\.\d+/);
+  });
+
+  it('per-model cost chip hidden when server omits cost_usd', async () => {
+    const noCostSample = {
+      ...SAMPLE,
+      by_model: SAMPLE.by_model.map(m => {
+        const { cost_usd, ...rest } = m;
+        return rest;
+      }),
+    };
+    const v = new UsageView(container, { fetchImpl: mockOk(noCostSample), nowMs: nowFn });
+    await v.tickOnce();
+    const chips = container.querySelectorAll('.usage-model-cost');
+    expect(chips.length).toBe(0);
   });
 
   it('summary shows formatted big numbers', async () => {
@@ -225,7 +262,8 @@ describe('UsageView', () => {
     // [calls, tokens, cost, cache rate]
     expect(metricValues[0]).toBe('704');
     expect(metricValues[1]).toBe('5.5M');
-    expect(metricValues[2]).toBe('—');
+    // v2.21.0: cost is now real ($12.3456 formatted). formatCost rounds to 2dp.
+    expect(metricValues[2]).toMatch(/\$12\.\d+/);
     expect(metricValues[3]).toBe('38.1%');
   });
 

@@ -1,6 +1,10 @@
 /**
  * UsageView — Sidebar 第三个 tab, 展示 LLM token / cache / cost 统计 (v2.12.0)
  *
+ * v2.21.0: cost 字段从 server 真实读取 (acp-bridge v0.23.0 已暴露
+ *   total_cost_usd + per-model cost_usd). 老 server (无 cost_usd) 走
+ *   formatCost null fallback "—" 优雅降级.
+ *
  * 数据源: GET /api/usage?hours=N (acp-bridge LiteLLM proxy)
  *
  * 重要语义注释:
@@ -12,7 +16,9 @@
  *   - 30s 轮询 (聚合 SQL 不应高频)
  *   - 时间窗 4 档: 1h / 24h / 7d / 30d
  *   - localStorage 持久化时间窗 (`pixel.usageHours`)
- *   - cost 字段: server 不暴露则显 "—", 不前端估算 (避免误导)
+ *   - cost 字段: server 暴露 total_cost_usd / cost_usd 时显示真实数字; 否则
+ *     显 "—" (formatCost 处理 null fallback). v2.12.0 时 server 不暴露,
+ *     v2.21.0 + acp-bridge v0.23.0 联动后真实生效.
  */
 
 const POLL_INTERVAL_MS = 30000;
@@ -227,10 +233,15 @@ export class UsageView {
       const mIn = m.input_tokens || 0;
       const mOut = m.output_tokens || 0;
       const mCached = m.cached_tokens || 0;
+      const mCost = m.cost_usd; // v2.21.0: server-fed
       const mTotal = mIn + mOut;
       const widthPct = (mTotal / maxTotal) * 100;
       const cachedPct = mIn > 0 ? Math.min(100, (mCached / mIn) * 100) : 0;
       const shortName = shortenModel(m.model);
+      // v2.21.0: cost chip 仅在 server 提供 cost_usd 时显示 (formatCost 也兜底)
+      const costChip = (mCost != null && Number.isFinite(mCost))
+        ? `<span class="usage-model-cost" title="cost from server (cache-aware)">${formatCost(mCost)}</span>`
+        : '';
       return `
         <div class="usage-model-row">
           <div class="usage-model-head">
@@ -245,6 +256,7 @@ export class UsageView {
             <span title="input tokens">in ${formatTokens(mIn)}</span>
             <span title="output tokens">out ${formatTokens(mOut)}</span>
             <span title="cached input tokens">cached ${formatTokens(mCached)}</span>
+            ${costChip}
           </div>
         </div>
       `;
@@ -262,10 +274,10 @@ export class UsageView {
           <div class="usage-metric-value">${formatTokens(totalAll)}</div>
           <div class="usage-metric-sub">in ${formatTokens(totalIn)} · out ${formatTokens(totalOut)}</div>
         </div>
-        <div class="usage-metric usage-metric-cost" title="server-side cost not exposed via /usage (acp-bridge does not return cost_usd in by_model)">
+        <div class="usage-metric usage-metric-cost" title="server-fed cost (cache-aware) from acp-bridge /usage">
           <div class="usage-metric-label">Cost</div>
-          <div class="usage-metric-value">—</div>
-          <div class="usage-metric-sub">(not avail)</div>
+          <div class="usage-metric-value">${formatCost(d.total_cost_usd)}</div>
+          <div class="usage-metric-sub">(${this._state.hours}h)</div>
         </div>
         <div class="usage-metric">
           <div class="usage-metric-label">Cache rate</div>

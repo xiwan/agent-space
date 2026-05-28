@@ -184,11 +184,14 @@ origin/master 当前落后 ≤ 3 个 commit.
      step_completed / step_failed / pipeline_done`, 同时支持 polling fallback
    - bubble 联动: progress 事件直接 enqueue 到对应 agent 头顶气泡 (💭 thinking /
      🔧 tool / message.part)
-7. **Cost 字段对接** (v2.12.0 留的钩子)
-   - acp-bridge `/usage` SELECT 加 `cost_usd` (litellm_proxy.py)
-   - acp-bridge `Job.to_dict` 暴露 `cost_usd / model_name / input_tokens / output_tokens`
-   - agent-space UsageView 把 "—" 换成实际数字
-   - history 卡片头加 `[$0.0012]` chip
+7. ~~**Cost 字段对接**~~ — RESOLVED 2026-05-28 (v2.21.0 + acp-bridge v0.23.0)
+   - ✅ acp-bridge `/usage` SELECT 加 `cost_usd` per-model + `total_cost_usd` top-level
+     (commit `0fbed0d` in acp-bridge main, basé sur LiteLLM model_prices_and_context_window
+     pricing + cache-aware 4-token-class 算法)
+   - ✅ agent-space UsageView 把 "—" 换成实际数字 (commit pending v2.21.0)
+   - ⚠️ acp-bridge `Job.to_dict` 暴露 cost_usd 还**没做** — jobs.py 仍用占位
+     `estimate_tokens` × 单价的粗估. 想要"per-job 成本卡片"得另起一版升级.
+   - ⚠️ history 卡片头 `[$0.0012]` chip — 没做, 同上, 等 Job.to_dict 暴露后实现.
 
 
 ---
