@@ -135,3 +135,77 @@ origin/master 当前落后 ≤ 3 个 commit.
    - acp-bridge `Job.to_dict` 暴露 `cost_usd / model_name / input_tokens / output_tokens`
    - agent-space UsageView 把 "—" 换成实际数字
    - history 卡片头加 `[$0.0012]` chip
+
+
+---
+
+## Stashed WIP — pickup as v2.17.0 (saved 2026-05-28 during v2.16.2)
+
+### 状态
+
+`git stash list` 有一条 `stash@{0}: v2.14.2-WIP: SSE live + cancel + artifact UI + make-game pipeline rewrite`.
+v2.16.2 phase 6 pre-commit 时发现工作目录有 5 个文件的非本次 scope 改动, 单独 stash 保留.
+
+### Stash 包含的工作 (5 文件)
+
+- **`src/pixel/CommandHistory.js`** (+454/-20 行)
+  - SSE 流式订阅: `step_started` / `step_progress` / `step_completed` / `step_failed` /
+    `pipeline_done` 事件渲染
+  - 轮询兜底: `_tickLive()` + `LIVE_POLL_INTERVAL_MS`, SSE 失败时退回 `/api/jobs/{id}/live`
+    与 `/api/pipelines/{id}/steps/{i}/live`
+  - **Cancel 按钮** (todo.md #2 — Submit cancel / abort): `.ch-cancel-btn` 绑
+    `cancelJob/cancelPipeline`
+  - **Artifact 链接** 渲染: 根据 step.artifact metadata, 把 URL 渲成超链, file 渲成下载链
+  - **Progress 折叠日志**: `<details>` 展示 tool / 思考 / 状态消息 (🔧 / 💭 / 📋)
+  - **实时耗时**: `.ch-elapsed` 给运行中任务显示 elapsed
+  - **Prompt preview**: 失败/无 text 的 step 也展示 prompt (不再被过滤)
+  - 截断长度 200 → 140
+  - `TERMINAL_STATUSES` 集合判断是否还在跑
+
+- **`src/pixel/CommandClient.js`** (+30 行) — 4 个新 endpoint:
+  - `pollJobLive(jobId)` → `/api/jobs/{id}/live`
+  - `pollPipelineStepLive(pipelineId, stepIndex)` → `/api/pipelines/{id}/steps/{i}/live`
+  - `cancelJob(jobId)` / `cancelPipeline(pipelineId)`
+
+- **`src/pixel/ArtifactComposer.js`** (+48 行)
+  - `renderTemplate` 加 `{{uid}}` 替换
+  - `buildArtifactPayload` 生成 8 字 hex uid + `artifact.context` 模板化, 返回 `_artifacts` 数组
+  - UI 加 steps chip 预览 (`agent → agent → agent`)
+
+- **`public/pixel/artifacts.json`** — make-game pipeline 重做:
+  - `context: {shared_cwd: "/tmp/opengame-{{uid}}"}` 对齐 OpenGame skill 沙箱要求
+  - 三 step 各加 `artifact: {type, label, pattern}` (gdd.md / game.html / CloudFront URL)
+  - prompt 全面重写: 策划师 → "prompt 工程师", 显式锚定文件名, S3/CloudFront 命令具体化
+
+- **`test/pixel-history.test.js`** (+13/-7 行) 适配 CommandHistory 行为变化:
+  - 截断 200 → 140
+  - "step 没 output 被过滤" → "全部 step 显示 (含状态占位符)"
+  - race 模式 turns 从 1 → 3 全显示, isWinner 仍标记
+  - 注释里标 `v2.14.2`
+
+### 取回流程 (推荐 v2.17.0)
+
+⚠️ **不要直接 `git stash pop` 后散乱 commit**. 走完整流程:
+
+1. Phase 0: 读这条 todo + 看 `git stash show -p stash@{0}` 复习实际 diff
+2. Phase 1: 声明版本号 (推荐 **v2.17.0** minor — 加新 endpoint + UI 大块 + 响应式 SSE)
+   写 `versions/v2.17.0.md` 设计文档, 拆 4 块 scope:
+   - A. CommandClient 4 个 endpoint
+   - B. ArtifactComposer `{{uid}}` + context 模板化
+   - C. CommandHistory SSE / 轮询 / cancel / artifact / progress
+   - D. artifacts.json make-game 重做
+3. Phase 3: `git stash pop` 取回
+4. Phase 4: 验证现有测试 + 补 SSE / cancel / artifact 渲染单测
+5. Phase 5: README 加 SSE / cancel feature note (Tech stack 段)
+6. Phase 6/7: pre-commit + commit
+
+### 触发条件
+
+- 想让 Heartbeat 之外也实时看 pipeline 进度 → 启动取回 (主要价值点)
+- 用户抱怨"长 pipeline 没法取消" → 启动取回 (Cancel 是 todo #2)
+- demo 里 make-game 失败需要看 GDD 中间件 → 启动取回 (artifact UI)
+
+### 版本号检查
+
+注意 stash 里的代码注释写 `v2.14.2` 是历史误标 (实际未版本化). 取回时**用新号**
+(v2.17.0), 不要复用 2.14.2.
