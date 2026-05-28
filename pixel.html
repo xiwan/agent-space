@@ -1202,6 +1202,16 @@
       font-family: monospace;
     }
     .hb-card-silent { opacity: 0.55; }
+    /* v2.17.0 #3: ping 成功 unshift 的卡片瞬时高亮 1.5s */
+    .hb-card-pinged {
+      animation: hb-card-flash 1.5s ease-out;
+      border-color: #38bdf8;
+    }
+    @keyframes hb-card-flash {
+      0% { background: #0c4a6e; box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.6); }
+      40% { background: #0c4a6e; box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.4); }
+      100% { background: #1e293b; box-shadow: 0 0 0 0 rgba(56, 189, 248, 0); }
+    }
     .hb-card-head {
       display: flex;
       align-items: center;

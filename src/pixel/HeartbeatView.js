@@ -32,8 +32,7 @@ const TTL_MAX = 100;
 const INTERVAL_LABELS = {
   30: '30s',
   60: '1 min',
-  120: '2 min',
-  300: '5 min',
+  180: '3 min',
   600: '10 min',
   1800: '30 min',
   3600: '1 h',
@@ -124,6 +123,8 @@ export class HeartbeatView {
     };
     this._timer = null;
     this._progressTimer = null;
+    this._pingedClearTimer = null;        // v2.17.0 #3
+    this._countdownStartMs = null;        // v2.17.0 #1: 真实下次轮询的起点
 
     this._render();
   }
@@ -218,8 +219,10 @@ export class HeartbeatView {
       // 任一成功就算 lastFetchedAt 更新
       if (stateOk || logsOk || ctxOk) this._state.lastFetchedAt = this._now();
       this._state.lastError = (stateOk && logsOk && ctxOk) ? null : firstError;
+      // v2.17.0 #1: 在 _render 之前设新的 countdown 起点, 让 _resumeCountdown 拿到
+      this._countdownStartMs = this._now();
       this._render();
-      this._startCountdownProgress();
+      this._resumeCountdown();
     }
   }
 
@@ -318,6 +321,14 @@ export class HeartbeatView {
           kind: 'ok',
           text: `injected (ttl ${body.ttl ?? ttl}, ${body.active_contexts ?? '?'} active)`,
         };
+        // v2.17.0 #3: 乐观插入到 contexts list 头, 等 tickOnce 回包覆盖.
+        // server 也会回这条, 不打 _optimistic marker.
+        const optimistic = {
+          text,
+          ttl: body.ttl ?? ttl,
+          created_at: this._now() / 1000,
+        };
+        this._state.contexts = [optimistic, ...(this._state.contexts || [])];
         this._state.injectText = ''; // 清空输入
       }
     } catch (e) {
@@ -393,6 +404,7 @@ export class HeartbeatView {
         const tag = body.silent ? 'silent' : 'spoke';
         this._state.interveneStatus = { kind: 'ok', text: `${target} ${tag}` };
         // 把这次 ping 结果即刻塞进 logs 头, 不等下次轮询
+        // v2.17.0 #3: 加 _pinged 标记, 让卡片用 hb-card-pinged 高亮 (1500ms CSS 动画)
         const entry = {
           ts: this._now() / 1000,
           agent: body.agent || target,
@@ -400,6 +412,7 @@ export class HeartbeatView {
           duration: body.duration ?? null,
           response: body.silent ? null : (body.response ?? ''),
           prompt_preview: body.prompt_preview || '',
+          _pinged: true,
         };
         this._state.logs = [entry, ...(this._state.logs || [])];
         if (body.snapshot) this._state.snapshot = body.snapshot;
@@ -427,11 +440,25 @@ export class HeartbeatView {
   }
 
   _startCountdownProgress() {
+    // v2.17.0 #1: alias 保留向后兼容 (内部统一用 _resumeCountdown)
+    this._resumeCountdown();
+  }
+
+  /**
+   * v2.17.0 #1: 进度条复位时不重置 startMs, 用 this._countdownStartMs.
+   * 这样 _render() 在非 tickOnce 触发的场景 (hideSilent toggle / inject 状态变化等)
+   * 重建 .hb-progress-bar 节点时, 进度仍延续真实下次轮询的剩余时间.
+   * 仅 tickOnce() finally 阶段刷新 _countdownStartMs.
+   */
+  _resumeCountdown() {
     if (this._progressTimer) clearInterval(this._progressTimer);
     const el = this.container.querySelector('.hb-progress-bar');
-    if (!el) return;
+    if (!el) {
+      this._progressTimer = null;
+      return;
+    }
     el.classList.remove('hb-progress-indeterminate');
-    const startMs = this._now();
+    const startMs = this._countdownStartMs ?? this._now();
     const total = this.pollIntervalMs;
     const step = () => {
       const elapsed = this._now() - startMs;
@@ -500,7 +527,7 @@ export class HeartbeatView {
     this._wireControls();
     this._wireIntervene();
     this._renderLogs();
-    this._startCountdownProgress();
+    this._resumeCountdown();
     this._restoreFocus(focusInfo);
   }
 
@@ -677,6 +704,10 @@ export class HeartbeatView {
       .slice() // 不污染原数组
       .sort((a, b) => (b.ts || 0) - (a.ts || 0));
 
+    // v2.17.0: prune expandedPrompt — 删掉已不在 logs 列表里的 key
+    // 防止 ring buffer 滚出后旧 key 永久残留
+    this._pruneExpandedPrompt(filtered);
+
     if (filtered.length === 0) {
       const totalNote = (logs && logs.length)
         ? `${logs.length} silent log${logs.length === 1 ? '' : 's'} hidden`
@@ -685,27 +716,65 @@ export class HeartbeatView {
       return;
     }
 
-    wrap.innerHTML = filtered.map(l => this._renderLogCard(l, snapshot)).join('');
+    const now = this._now();
+    wrap.innerHTML = filtered.map(l => this._renderLogCard(l, snapshot, now)).join('');
     this._wireLogs();
+
+    // v2.17.0 #3: ping unshift 的 log 标了 _pinged, 1500ms 后清掉重渲一次,
+    // 让 hb-card-pinged 高亮动画自然结束 (CSS keyframe 控制视觉, JS 只清状态)
+    this._scheduleClearPinged();
   }
 
-  _renderLogCard(log, snapshot) {
-    const tsKey = String(log.ts);
-    const expanded = this._state.expandedPrompt.has(tsKey);
-    const ago = formatRelTs(log.ts, this._now());
+  /**
+   * v2.17.0: 复合 key (agent | ts.toFixed(3)) 取代单纯的 ts 字符串.
+   * 防浮点格式漂移 + 不同 agent 同 ts 撞车.
+   */
+  _promptKey(log) {
+    const ts = Number(log.ts);
+    const tsStr = Number.isFinite(ts) ? ts.toFixed(3) : 'na';
+    return (log.agent || '') + '|' + tsStr;
+  }
+
+  _pruneExpandedPrompt(filteredLogs) {
+    if (!this._state.expandedPrompt || this._state.expandedPrompt.size === 0) return;
+    const validKeys = new Set(filteredLogs.map(l => this._promptKey(l)));
+    for (const k of [...this._state.expandedPrompt]) {
+      if (!validKeys.has(k)) this._state.expandedPrompt.delete(k);
+    }
+  }
+
+  _scheduleClearPinged() {
+    const logs = this._state.logs || [];
+    if (!logs.some(l => l._pinged)) return;
+    if (this._pingedClearTimer) return; // 已经排队
+    this._pingedClearTimer = setTimeout(() => {
+      this._pingedClearTimer = null;
+      let dirty = false;
+      for (const l of this._state.logs) {
+        if (l._pinged) { delete l._pinged; dirty = true; }
+      }
+      if (dirty) this._renderLogs();
+    }, 1500);
+  }
+
+  _renderLogCard(log, snapshot, now) {
+    const promptKey = this._promptKey(log);
+    const expanded = this._state.expandedPrompt.has(promptKey);
+    const ago = formatRelTs(log.ts, now ?? this._now());
     const dur = formatDur(log.duration);
     const stateChip = this._chipForAgent(log.agent, snapshot);
     const respBlock = log.silent
       ? `<div class="hb-card-body hb-silent">[silent]</div>`
       : `<div class="hb-card-body">${escapeHtml(String(log.response ?? ''))}</div>`;
     const promptToggle = log.prompt_preview
-      ? `<div class="hb-card-prompt-toggle" data-ts="${escapeAttr(tsKey)}">${expanded ? '▾' : '▸'} prompt</div>`
+      ? `<div class="hb-card-prompt-toggle" data-prompt-key="${escapeAttr(promptKey)}">${expanded ? '▾' : '▸'} prompt</div>`
       : '';
     const promptBody = (expanded && log.prompt_preview)
       ? `<pre class="hb-card-prompt">${escapeHtml(log.prompt_preview)}</pre>`
       : '';
+    const pingedCls = log._pinged ? ' hb-card-pinged' : '';
     return `
-      <div class="hb-card${log.silent ? ' hb-card-silent' : ''}" data-ts="${escapeAttr(tsKey)}">
+      <div class="hb-card${log.silent ? ' hb-card-silent' : ''}${pingedCls}" data-prompt-key="${escapeAttr(promptKey)}">
         <div class="hb-card-head">
           <span class="hb-card-agent">${escapeHtml(log.agent || '?')}</span>
           ${stateChip}
@@ -745,9 +814,10 @@ export class HeartbeatView {
   _wireLogs() {
     this.container.querySelectorAll('.hb-card-prompt-toggle').forEach(el => {
       el.addEventListener('click', () => {
-        const ts = el.dataset.ts;
-        if (this._state.expandedPrompt.has(ts)) this._state.expandedPrompt.delete(ts);
-        else this._state.expandedPrompt.add(ts);
+        const key = el.dataset.promptKey;
+        if (!key) return;
+        if (this._state.expandedPrompt.has(key)) this._state.expandedPrompt.delete(key);
+        else this._state.expandedPrompt.add(key);
         this._renderLogs();
       });
     });

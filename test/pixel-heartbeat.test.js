@@ -12,7 +12,7 @@ const NOW_MS = 1779946834500;
 const SAMPLE_STATE = {
   enabled_agents: ['claude', 'kiro', 'qwen'],
   interval: 60,
-  allowed_intervals: [60, 120, 300, 600],
+  allowed_intervals: [30, 60, 180, 600, 1800, 3600],
   snapshot: {
     agents: {
       claude: { busy: 0, idle: 1 },
@@ -77,14 +77,19 @@ async function flush() {
 }
 
 describe('HeartbeatView formatters', () => {
-  it('formatIntervalLabel — known values', () => {
+  it('formatIntervalLabel — known values (v2.17.0 aligned with acp-bridge whitelist)', () => {
+    expect(formatIntervalLabel(30)).toBe('30s');
     expect(formatIntervalLabel(60)).toBe('1 min');
-    expect(formatIntervalLabel(120)).toBe('2 min');
-    expect(formatIntervalLabel(300)).toBe('5 min');
+    expect(formatIntervalLabel(180)).toBe('3 min');
     expect(formatIntervalLabel(600)).toBe('10 min');
+    expect(formatIntervalLabel(1800)).toBe('30 min');
+    expect(formatIntervalLabel(3600)).toBe('1 h');
   });
-  it('formatIntervalLabel — unknown falls back to "Ns"', () => {
+  it('formatIntervalLabel — unknown / removed values fall back to "Ns"', () => {
     expect(formatIntervalLabel(45)).toBe('45s');
+    // v2.17.0: 120 / 300 已从白名单移除, 走 fallback
+    expect(formatIntervalLabel(120)).toBe('120s');
+    expect(formatIntervalLabel(300)).toBe('300s');
     expect(formatIntervalLabel(null)).toBe('—');
     expect(formatIntervalLabel(undefined)).toBe('—');
   });
@@ -144,7 +149,7 @@ describe('HeartbeatView render', () => {
     const sel = container.querySelector('.hb-interval-select');
     expect(sel.disabled).toBe(false);
     const opts = [...sel.querySelectorAll('option')].map(o => parseInt(o.value, 10));
-    expect(opts).toEqual([60, 120, 300, 600]);
+    expect(opts).toEqual([30, 60, 180, 600, 1800, 3600]);
     expect(sel.value).toBe('60');
 
     // hideSilent default = true → kiro 卡片应隐藏 (silent=true)
@@ -242,22 +247,23 @@ describe('HeartbeatView render', () => {
   });
 
   it('changeInterval — success path updates UI', async () => {
+    // v2.17.0: 用新白名单值 60 → 180 (3 min)
     const f = makeFetch({
       'GET /api/heartbeat':       async () => okResp(SAMPLE_STATE),
       'GET /api/heartbeat/logs':  async () => okResp(SAMPLE_LOGS),
       'GET /api/heartbeat/context': async () => okResp({ contexts: [] }),
-      'PUT /api/heartbeat/interval': async () => okResp({ interval: 120, previous: 60 }),
+      'PUT /api/heartbeat/interval': async () => okResp({ interval: 180, previous: 60 }),
     });
     const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
     await v.tickOnce();
 
-    await v.changeInterval(120);
+    await v.changeInterval(180);
     await flush();
 
     const ic = container.querySelector('.hb-interval-change');
     expect(ic).not.toBeNull();
     expect(ic.classList.contains('hb-interval-ok')).toBe(true);
-    expect(ic.textContent).toMatch(/1 min.*2 min/);
+    expect(ic.textContent).toMatch(/1 min.*3 min/);
   });
 
   it('changeInterval — server error body sets hb-interval-error', async () => {
@@ -598,6 +604,232 @@ describe('HeartbeatView v2.16.0 — Intervene', () => {
       '/api/heartbeat',
       '/api/heartbeat/context',
       '/api/heartbeat/logs',
+    ]);
+  });
+});
+
+// ===========================================================================
+// v2.17.0 — UX/integrity polish
+// ===========================================================================
+
+describe('HeartbeatView v2.17.0 — UX polish', () => {
+  let container;
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    try { localStorage.clear(); } catch {}
+  });
+  afterEach(() => {
+    document.body.innerHTML = '';
+    try { localStorage.clear(); } catch {}
+    vi.useRealTimers();
+  });
+
+  // ---- #1 进度条不被 _render() 反复重置 ----------------------------------
+
+  it('#1 progress bar countdown survives _render() (e.g. toggleIntervene) and reflects real elapsed time', async () => {
+    const f = defaultMock();
+    let now = NOW_MS;
+    const v = new HeartbeatView(container, {
+      fetchImpl: f,
+      nowMs: () => now,
+      pollIntervalMs: 10000,
+    });
+
+    // 第一次 tickOnce 完成 → countdown 起点 = NOW_MS
+    await v.tickOnce();
+    await flush();
+
+    // 走 4 秒
+    now = NOW_MS + 4000;
+
+    // 用户点 Intervene 折叠头 → 触发 _render() (但不触发新一轮 fetch)
+    v.toggleIntervene();
+    await flush();
+
+    // _render → _resumeCountdown 的 step() 立即跑一次,
+    // 应基于 _countdownStartMs (= NOW_MS) 算出 4000/10000 = 40%
+    // 而不是从 now (NOW_MS+4000) 重新归零变 0%
+    const bar = container.querySelector('.hb-progress-bar');
+    expect(bar).not.toBeNull();
+    const widthPct = parseFloat(bar.style.width);
+    expect(widthPct).toBeGreaterThan(35);
+    expect(widthPct).toBeLessThan(45);
+  });
+
+  it('#1 progress bar resets to 0 ONLY when tickOnce() actually runs', async () => {
+    const f = defaultMock();
+    let now = NOW_MS;
+    const v = new HeartbeatView(container, {
+      fetchImpl: f,
+      nowMs: () => now,
+      pollIntervalMs: 10000,
+    });
+
+    await v.tickOnce();
+    await flush();
+    now = NOW_MS + 7500;
+    // 拉一次新数据 → countdown 起点应刷为 NOW_MS+7500
+    await v.tickOnce();
+    await flush();
+
+    const bar = container.querySelector('.hb-progress-bar');
+    const widthPct = parseFloat(bar.style.width);
+    expect(widthPct).toBeLessThan(5); // 几乎刚刚归零
+  });
+
+  // ---- #2 expandedPrompt 用复合 key 并 prune ----------------------------
+
+  it('#2 expandedPrompt uses (agent | ts) composite key, survives floating-ts re-emission', async () => {
+    const f = defaultMock();
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    await v.tickOnce();
+    await flush();
+
+    // 找到 claude 卡片 (有 prompt_preview)
+    const toggle = container.querySelector('.hb-card-prompt-toggle');
+    expect(toggle).not.toBeNull();
+    const key = toggle.dataset.promptKey;
+    expect(key).toMatch(/^claude\|\d+\.\d{3}$/);
+
+    // 点击展开
+    toggle.click();
+    await flush();
+    expect(container.querySelector('.hb-card-prompt')).not.toBeNull();
+    expect(v.getState().expandedPrompt.has(key)).toBe(true);
+  });
+
+  it('#2 expandedPrompt prunes keys for logs that fell out of ring buffer', async () => {
+    const f = defaultMock();
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    await v.tickOnce();
+    await flush();
+
+    // 展开 claude 那条
+    const toggle = container.querySelector('.hb-card-prompt-toggle');
+    toggle.click();
+    await flush();
+    expect(v.getState().expandedPrompt.size).toBe(1);
+
+    // 模拟下一次 tick — server 不再回 claude (滚出 buffer), 只回 qwen
+    f.mockImplementation(async (url, opts) => {
+      const key = `${(opts && opts.method) || 'GET'} ${url}`;
+      if (key === 'GET /api/heartbeat')         return okResp(SAMPLE_STATE);
+      if (key === 'GET /api/heartbeat/context') return okResp({ contexts: [] });
+      if (key === 'GET /api/heartbeat/logs')    return okResp({
+        total: 1,
+        logs: [{ ts: NOW_MS / 1000 - 5, agent: 'qwen', silent: false,
+                 duration: 1.0, response: 'new', prompt_preview: 'prompt q' }],
+      });
+      throw new Error('unhandled: ' + key);
+    });
+    await v.tickOnce();
+    await flush();
+    // claude 的 key 应被 prune
+    expect(v.getState().expandedPrompt.size).toBe(0);
+  });
+
+  // ---- #3 ping 加 _pinged + inject 乐观插入 contexts -----------------------
+
+  it('#3 ping success marks new log entry with hb-card-pinged class', async () => {
+    const f = defaultMock({
+      'POST /api/heartbeat/claude': async () => okResp({
+        agent: 'claude', silent: false, response: 'pinged response', duration: 5.5,
+        snapshot: SAMPLE_STATE.snapshot, prompt_preview: 'You are claude...',
+      }),
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    v.toggleIntervene();
+    await v.tickOnce();
+    await flush();
+    v.setPingAgent('claude');
+    await v.pingAgent();
+    await flush();
+
+    // 新 log 卡片应有 hb-card-pinged class
+    const cards = container.querySelectorAll('.hb-card');
+    const pingedCards = container.querySelectorAll('.hb-card-pinged');
+    expect(pingedCards.length).toBe(1);
+    expect(pingedCards[0].querySelector('.hb-card-agent').textContent).toBe('claude');
+
+    // 新 log 在 _state.logs 头部, 带 _pinged: true
+    const logs = v.getState().logs;
+    expect(logs[0]._pinged).toBe(true);
+    expect(logs[0].response).toBe('pinged response');
+  });
+
+  it('#3 inject success optimistically prepends to contexts list (no wait for tickOnce)', async () => {
+    const f = defaultMock({
+      'POST /api/heartbeat/context': async () => okResp({
+        status: 'ok', ttl: 3, active_contexts: 1,
+      }),
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    v.toggleIntervene();
+    await v.tickOnce();
+    await flush();
+
+    expect(v.getState().contexts.length).toBe(0);
+
+    v.setInjectText('demo starts at 2pm');
+    v.setInjectTtl(3);
+    await v.injectContext();
+    // tickOnce 在 finally 里会 fire-and-forget; 等 pending 完成
+    await flush();
+
+    const contexts = v.getState().contexts;
+    expect(contexts.length).toBeGreaterThanOrEqual(1);
+    // 第一条应是刚注入的 (乐观插入到头部)
+    expect(contexts[0].text).toBe('demo starts at 2pm');
+    expect(contexts[0].ttl).toBe(3);
+    // UI 也应渲染出这条
+    const list = container.querySelector('.hb-context-list');
+    expect(list).not.toBeNull();
+    expect(list.textContent).toMatch(/demo starts at 2pm/);
+  });
+
+  it('#3 inject failure does NOT pollute contexts list (no optimistic insert on error)', async () => {
+    const f = defaultMock({
+      'POST /api/heartbeat/context': async () => ({
+        ok: false, status: 400, json: async () => ({ error: 'text is required' }),
+      }),
+    });
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    v.toggleIntervene();
+    await v.tickOnce();
+    await flush();
+
+    v.setInjectText('something');
+    v.setInjectTtl(3);
+    await v.injectContext();
+    await flush();
+
+    expect(v.getState().contexts.length).toBe(0);
+    const status = container.querySelector('.hb-intervene-status');
+    expect(status.classList.contains('hb-intervene-error')).toBe(true);
+  });
+
+  // ---- #4 INTERVAL_LABELS 同步 acp-bridge 白名单 -------------------------
+
+  it('#4 select renders correct labels for all 6 acp-bridge whitelist values', async () => {
+    const f = defaultMock();
+    const v = new HeartbeatView(container, { fetchImpl: f, nowMs: () => NOW_MS });
+    await v.tickOnce();
+    await flush();
+
+    const sel = container.querySelector('.hb-interval-select');
+    const opts = [...sel.querySelectorAll('option')].map(o => ({
+      val: parseInt(o.value, 10),
+      label: o.textContent,
+    }));
+    expect(opts).toEqual([
+      { val: 30,   label: '30s' },
+      { val: 60,   label: '1 min' },
+      { val: 180,  label: '3 min' },
+      { val: 600,  label: '10 min' },
+      { val: 1800, label: '30 min' },
+      { val: 3600, label: '1 h' },
     ]);
   });
 });
