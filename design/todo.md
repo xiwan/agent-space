@@ -68,41 +68,13 @@ A 留 v2.14.0+, 等真有人需要"按 agent 看 cost"再做.
 
 ---
 
-## v2.0.0 paused side branch — Tilemap room system + grid editor
+## ~~v2.0.0 paused side branch~~ — RESOLVED 2026-05-28 (v2.14.1)
 
-### 背景
-
-v2.0.0 (Phaser 4 双区办公 + tilemap + RoomScene + EditorScene) 自 v2.1.0
-转 pixel viewer 主线后一直 paused. 工作树仍带未 stage 的 v2.0.0 改动:
-
-- modified: `index.html`, `src/main.js`, `src/scenes/LpcMainScene.js`,
-  `src/systems/AgentManager.js`, `src/bridge/AcpBridgeClient.js`,
-  `public/assets/room/tilemap.json`
-- deleted: `public/assets/desk/*` (18 个 PNG)
-- untracked: `index.v1.html`, `src/scenes/{Editor,Room}Scene.js`,
-  `src/tilemap/`, `public/assets/room/desk/`
-
-每个新版本 (v2.7.0–v2.12.0) commit 时都把它们排除在 stage 外.
-
-### 选择空间
-
-1. **完整复活 v2.0.0** — 接续 RoomScene/EditorScene/TilemapManager 重构,
-   做 Phaser 主线的 v2.x.0 (与 pixel 主线并行)
-2. **彻底放弃 v2.0.0** — 把工作树 reset / 删掉相关文件 + 删 v2.0.0 的 README,
-   把 / 入口指向 pixel 或简化
-3. **现状维持** — 不做任何动作, 工作树继续 dirty
-
-### 推荐
-
-**选项 2 + 收拢入口** 是最干净的. 但需要明确决策:
-- `index.html` (Phaser) 是否保留作为 demo / fallback?
-- 如保留: 至少把当前 modified 的几个文件 commit 或 reset 一次, 让工作树 clean
-- 如放弃: `git rm` 一组文件 + reset modified + 删 RoomScene/EditorScene/tilemap
-
-### 触发条件
-
-- 想清理工作树 (要 release / 上 origin 推 push) → 处理掉
-- 决定用哪条主线展示给观众 → 选 1 或 2
+cleanup commit `546fefbb` 已删除 Phaser 副线全部代码 (index.html, src/main.js,
+src/game.js, src/scenes/, src/systems/, src/bridge/, src/tilemap/, src/ui/,
+src/config.js, public/assets/). v2.14.1 同步刷新 OPERATIONS.md 移除所有副线
+描述, 并 `npm prune` 清掉 node_modules/phaser 死依赖. `versions/v2.0.0.md`
+保留作为历史档案.
 
 ---
 
@@ -110,15 +82,14 @@ v2.0.0 (Phaser 4 双区办公 + tilemap + RoomScene + EditorScene) 自 v2.1.0
 
 ### 背景
 
-v2.3.0 → v2.12.0 共 13 个本地 commit 全部未 push (含 v2.10.1 / v2.11.0 /
-v2.11.1 / v2.12.0 + 10 个早期). origin/master 当前落后 13 个.
+v2.13.4 + v2.14.0 (+ v2.14.1 if/when committed) 本地未 push.
+origin/master 当前落后 ≤ 3 个 commit.
 
 ### 推荐
 
 任何下一次 push 之前:
-1. 决定 v2.0.0 副线工作树怎么处理 (见上一项)
-2. 跑全套 build + test 一次
-3. 一次性 `git push` 所有 commit
+1. 跑全套 build + test 一次
+2. 一次性 `git push` 所有 commit
 
 ### 触发条件
 
@@ -132,8 +103,9 @@ v2.11.1 / v2.12.0 + 10 个早期). origin/master 当前落后 13 个.
 
 - OPERATIONS.md 在 `.gitignore` 里, 改动只在本机存档
 - Architecture / Read Order / Part 2 至少每 5 个版本核对一次, 防再次落后 8 版
-- v2.10.1 是上一次自我维护. 下次自维护建议在 v2.15.0–v2.16.0 之间
-- 每次自维护单独走 patch 流程 (e.g. v2.10.1 模板)
+- 历次自维护: v2.10.1 (v2.1–v2.10), v2.14.1 (v2.11–v2.14 + 副线下架).
+  下次自维护建议在 v2.18.0–v2.20.0 之间
+- 每次自维护单独走 patch 流程 (e.g. v2.10.1 / v2.14.1 模板)
 
 ---
 
