@@ -119,11 +119,11 @@ export class Sidebar {
   _renderShell() {
     this.container.innerHTML = `
       <div class="sidebar-tabs">
+        <button class="sidebar-tab" data-tab="heartbeat">Chat</button>
+        <button class="sidebar-tab" data-tab="history">Task</button>
+        <button class="sidebar-tab" data-tab="composer">Pipeline</button>
         <button class="sidebar-tab" data-tab="agents">Agents</button>
-        <button class="sidebar-tab" data-tab="history">History</button>
         <button class="sidebar-tab" data-tab="usage">Usage</button>
-        <button class="sidebar-tab" data-tab="heartbeat">Heartbeat</button>
-        <button class="sidebar-tab" data-tab="composer">⚡ Compose</button>
       </div>
       <div class="sidebar-agents"></div>
       <div class="sidebar-history-wrap">
@@ -206,10 +206,12 @@ export class Sidebar {
     const domains = (agent.domains && agent.domains.length)
       ? agent.domains.join(', ')
       : '—';
+    const meshBadge = agent.mesh ? '<span class="pixel-badge-mesh">mesh</span>' : '';
 
     card.innerHTML = `
       <div class="pixel-card-header">
         <span class="pixel-card-name"></span>
+        ${meshBadge}
         <span class="pixel-state pixel-state-${agent.state}">${escape(stateLabel)}</span>
       </div>
       <div class="pixel-card-desc"></div>

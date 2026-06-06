@@ -62,6 +62,12 @@ export const BUBBLE_MAX_LINE_PX = 240;
 export const BUBBLE_MAX_LINES = 12;
 export const BUBBLE_LINE_HEIGHT = 12;  // 10px font + 2px leading
 
+// v2.22.0: "wait for order" 预设选项 — 选中 agent 时头上浮现的选择框
+export const ORDER_PRESETS = [
+  { id: 'last_task', label: '上一个任务在干嘛？' },
+  { id: 'say_something', label: '有什么想说的？' },
+];
+
 /**
  * v2.16.2: 字符级断行 (中英文混排, 像素字体, 无 word boundary).
  *
@@ -469,6 +475,11 @@ export class PixelRenderer {
     this._lastConfigByName = {};
     this._selectedName = null;
 
+    // v2.22.0: wait-for-order 交互态
+    this.onAgentOrder = opts.onAgentOrder || null;  // (name, presetId, label) => void
+    this._waitOrderName = null;        // 当前处于 wait-order 的 agent 名
+    this._orderHitRects = [];          // 每帧记录选择框选项的 [x,y,w,h,presetId,label] 用于点击命中
+
     // v2.4.0: 编辑模式状态
     this._editMode = false;
     this._mapConfig = null;        // 在编辑模式下要画的 obstacles/zones
@@ -492,6 +503,26 @@ export class PixelRenderer {
    */
   setSelected(name) {
     this._selectedName = name || null;
+  }
+
+  /**
+   * v2.22.0: 设置/取消处于 "wait for order" 的 agent.
+   * 该 agent 站立不动 (停 wander + 不冒随机气泡), 头上浮现预设选择框.
+   * @param {string | null} name agent 名, 传 null 取消
+   */
+  /**
+   * v2.22.0: 设置/取消处于 "wait for order" 的 agent.
+   * 该 agent 站立不动 (停 wander + 不冒随机气泡), 头上浮现预设选择框.
+   * busy 的 agent 不进入 wait-order — 让它继续自己行动.
+   * @param {string | null} name agent 名, 传 null 取消
+   */
+  setWaitOrder(name) {
+    if (name) {
+      const a = this.agents.find(x => x.name === name);
+      if (a && a.state === 'busy') { this._waitOrderName = null; this._orderHitRects = []; return; }
+    }
+    this._waitOrderName = name || null;
+    if (!name) this._orderHitRects = [];
   }
 
   /**
@@ -693,6 +724,19 @@ export class PixelRenderer {
     const SPEED = 1.5; // 每帧像素
     const now = performance.now();
     for (const a of this.agents) {
+      // v2.22.0: wait-order agent 站立不动 — 停 wander/walking, 清气泡 (改显选择框)
+      if (a.name === this._waitOrderName) {
+        // 期间若转 busy → 自动解除 wait-order, 让它去工作
+        if (a.state === 'busy') {
+          this._waitOrderName = null;
+          this._orderHitRects = [];
+        } else {
+          a.walking = false;
+          a.path = null;
+          a.bubbleText = null;
+          continue;
+        }
+      }
       // v2.6.0: wander — 无 path + idle/busy + 等待结束 → 选新 cell
       if (!a.path && (a.state === 'idle' || a.state === 'busy') && now >= (a.wanderUntil || 0)) {
         this._tryWander(a);
@@ -887,6 +931,9 @@ export class PixelRenderer {
     // y-sort agents (脚部 y 越大越靠前)
     const sorted = [...this.agents].sort((a, b) => a.cy - b.cy);
 
+    // v2.22.0: 每帧重建选择框命中区
+    this._orderHitRects = [];
+
     for (const a of sorted) {
       const isSelected = a.name === this._selectedName;
 
@@ -903,8 +950,11 @@ export class PixelRenderer {
       // name label
       this._drawLabel(a);
 
-      // v2.7.0: pixel chat bubble — only draw when bubbleText set by _tick lifecycle
-      if (a.bubbleText) {
+      // v2.22.0: wait-order agent 头上画预设选择框 (优先于普通气泡)
+      if (a.name === this._waitOrderName) {
+        this._drawOrderBox(a);
+      } else if (a.bubbleText) {
+        // v2.7.0: pixel chat bubble — only draw when bubbleText set by _tick lifecycle
         this._drawBubble(a);
       }
     }
@@ -987,14 +1037,20 @@ export class PixelRenderer {
 
     // bg
     const tw = ctx.measureText(text).width;
+    const meshIcon = a.mesh ? '🌐' : '';
+    const meshW = meshIcon ? ctx.measureText(meshIcon).width + 2 : 0;
     const padX = 4;
-    const totalW = tw + padX * 2;
+    const totalW = tw + meshW + padX * 2;
     ctx.fillStyle = 'rgba(0,0,0,0.65)';
     ctx.fillRect(a.cx - totalW / 2, labelY - 9, totalW, 14);
 
     // name (colored by state)
     ctx.fillStyle = nameColor;
-    ctx.fillText(text, a.cx, labelY - 1);
+    if (meshIcon) {
+      ctx.fillText(meshIcon + ' ' + text, a.cx, labelY - 1);
+    } else {
+      ctx.fillText(text, a.cx, labelY - 1);
+    }
 
     ctx.restore();
   }
@@ -1072,14 +1128,74 @@ export class PixelRenderer {
     ctx.restore();
   }
 
+  /**
+   * v2.22.0: 在 agent 头上画 "wait for order" 预设选择框.
+   * 每个预设是一个可点击的像素按钮; 命中区记录到 this._orderHitRects.
+   */
+  _drawOrderBox(a) {
+    const { ctx } = this;
+    ctx.save();
+    ctx.font = '10px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    const padX = 6;
+    const rowH = 18;
+    const gap = 2;
+    const measure = (s) => ctx.measureText(s).width;
+    let maxW = 0;
+    for (const p of ORDER_PRESETS) maxW = Math.max(maxW, measure(p.label));
+    const bw = Math.ceil(maxW + padX * 2);
+    const bh = ORDER_PRESETS.length * rowH + (ORDER_PRESETS.length - 1) * gap + padX;
+
+    const boxBottom = a.cy - 80 - 9 - 8;
+    const by = Math.round(boxBottom - bh);
+    const bx = Math.round(a.cx - bw / 2);
+
+    // 黑边 + 深色面板
+    ctx.fillStyle = '#000';
+    ctx.fillRect(bx - 1, by - 1, bw + 2, bh + 2);
+    ctx.fillStyle = '#1f2937';
+    ctx.fillRect(bx, by, bw, bh);
+
+    // 逐个预设画按钮 + 记录命中区
+    let ry = by + Math.floor(padX / 2);
+    for (const p of ORDER_PRESETS) {
+      ctx.fillStyle = '#f3f4f6';
+      ctx.fillRect(bx + 2, ry, bw - 4, rowH);
+      ctx.fillStyle = '#1f2937';
+      ctx.fillText(p.label, a.cx, ry + rowH / 2);
+      this._orderHitRects.push([bx + 2, ry, bw - 4, rowH, p.id, p.label]);
+      ry += rowH + gap;
+    }
+
+    // 像素尾巴
+    const tailX = Math.round(a.cx);
+    const tailY = by + bh;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(tailX - 3, tailY, 6, 1);
+    ctx.fillRect(tailX - 2, tailY + 1, 4, 1);
+    ctx.fillRect(tailX - 1, tailY + 2, 2, 1);
+
+    ctx.restore();
+  }
+
   _handleClick(e) {
-    if (!this.onAgentClick) return;
     const rect = this.canvas.getBoundingClientRect();
     const scaleX = this.canvas.width / rect.width;
     const scaleY = this.canvas.height / rect.height;
     const mx = (e.clientX - rect.left) * scaleX;
     const my = (e.clientY - rect.top) * scaleY;
 
+    // v2.22.0: 优先命中 wait-order 选择框
+    for (const [rx, ry, rw, rh, presetId, label] of this._orderHitRects) {
+      if (mx >= rx && mx <= rx + rw && my >= ry && my <= ry + rh) {
+        if (this.onAgentOrder) this.onAgentOrder(this._waitOrderName, presetId, label);
+        return;
+      }
+    }
+
+    if (!this.onAgentClick) return;
     // hit test: 角色脚部 (cx, cy), bbox 大约 16*scale 宽 32*scale 高 (向上)
     const hitW = FRAME_W * RENDER_SCALE;
     const hitH = FRAME_H * RENDER_SCALE;

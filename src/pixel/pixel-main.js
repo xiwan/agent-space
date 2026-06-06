@@ -71,6 +71,7 @@ async function main() {
     if (selectedName === name) return;
     selectedName = name;
     renderer.setSelected(name);
+    renderer.setWaitOrder(name);   // v2.22.0: 选中 → 进入 wait-order, 头上浮现选择框
     sidebar.setSelected(name);
   };
   const toggleSelected = (name) => setSelected(selectedName === name ? null : name);
@@ -95,6 +96,8 @@ async function main() {
   const renderer = new PixelRenderer(canvas, {
     assetPath: '/pixel',
     onAgentClick: (agent) => toggleSelected(agent.name),
+    // v2.22.0: wait-order 选择框点击 → 发预设问题给 agent, 回复冒泡
+    onAgentOrder: (name, presetId, label) => handleAgentOrder(name, presetId, label),
   });
   // v2.13.4: 默认就 running (从 v2.5.0 的 paused+hidden 翻转)
   renderer.setPaused(false);
@@ -112,6 +115,39 @@ async function main() {
 
   // === v2.10.0: Command Composer + Client + History ===
   const commandClient = new CommandClient();
+
+  // v2.22.0: wait-order 预设 → prompt 映射
+  const ORDER_PROMPTS = {
+    last_task: '用一句话说说你上一个任务在干嘛？',
+    say_something: '有什么想说的？随便聊一句。',
+  };
+
+  // v2.22.0: 选择框点击 → 发 job, 回复冒泡; 发完退出 wait-order
+  const handleAgentOrder = async (name, presetId, label) => {
+    const prompt = ORDER_PROMPTS[presetId];
+    if (!name || !prompt) return;
+    renderer.setWaitOrder(null);
+    renderer.enqueueBubble(name, '…', { duration: 60000 });
+    try {
+      const res = await commandClient.submitJob({ body: { agent_name: name, prompt } });
+      const jobId = res && res.job_id;
+      if (!jobId) { renderer.enqueueBubble(name, '(no reply)'); return; }
+      // 轮询直到完成 (最多 ~3min, 冷启动 agent 起 session 较慢)
+      for (let i = 0; i < 90; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        const job = await commandClient.pollJob(jobId);
+        if (job && (job.status === 'completed' || job.status === 'failed')) {
+          const text = job.result || job.error || '(empty)';
+          renderer.enqueueBubble(name, text);
+          return;
+        }
+      }
+      renderer.enqueueBubble(name, '还在想…（任务仍在运行，去 History 看结果）');
+    } catch (e) {
+      renderer.enqueueBubble(name, `(error: ${e.message || e})`);
+    }
+  };
+
   const historyContainer = sidebar.getHistoryContainer();
   const history = historyContainer ? new CommandHistory(historyContainer, {
     client: commandClient,

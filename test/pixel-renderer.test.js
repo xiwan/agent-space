@@ -10,6 +10,7 @@ import {
   BUBBLE_MAX_CHARS,
   BUBBLE_MAX_LINE_PX,
   BUBBLE_MAX_LINES,
+  ORDER_PRESETS,
 } from '../src/pixel/PixelRenderer.js';
 
 // happy-dom doesn't support canvas 2d context; mock it
@@ -957,5 +958,90 @@ describe('v2.13.3 _tick fallback: no path → stay put', () => {
     renderer._tick();
     // path 走向 cell [6,6] 中心 = (104, 104) — 应朝那移动
     expect(agent.cx).toBeGreaterThan(100);
+  });
+});
+
+// ============================================================
+// v2.22.0: wait-for-order interactive preset box
+// ============================================================
+describe('v2.22.0 wait-for-order', () => {
+  function readyRenderer() {
+    const canvas = makeCanvas();
+    const r = new PixelRenderer(canvas);
+    r._spritesVisible = true;
+    r._paused = false;
+    r.sheet.loaded = true;
+    r.sheet.background = { complete: true, naturalWidth: 960, naturalHeight: 800 };
+    r.sheet.chars = [{ complete: true, naturalWidth: 112, naturalHeight: 96 }];
+    return r;
+  }
+
+  it('ORDER_PRESETS has the two preset options', () => {
+    expect(ORDER_PRESETS.map(p => p.id)).toEqual(['last_task', 'say_something']);
+  });
+
+  it('setWaitOrder + _draw records clickable hit rects', () => {
+    const r = readyRenderer();
+    r.agents = [{ name: 'kiro', cx: 200, cy: 300, state: 'idle', color: 0, facing: 'down', walking: false }];
+    r.setWaitOrder('kiro');
+    r._draw();
+    expect(r._orderHitRects.length).toBe(ORDER_PRESETS.length);
+  });
+
+  it('setWaitOrder(null) clears hit rects', () => {
+    const r = readyRenderer();
+    r.agents = [{ name: 'kiro', cx: 200, cy: 300, state: 'idle', color: 0, facing: 'down', walking: false }];
+    r.setWaitOrder('kiro');
+    r._draw();
+    r.setWaitOrder(null);
+    expect(r._orderHitRects.length).toBe(0);
+  });
+
+  it('clicking a preset fires onAgentOrder with presetId', () => {
+    const calls = [];
+    const r = readyRenderer();
+    r.onAgentOrder = (name, id, label) => calls.push([name, id, label]);
+    r.agents = [{ name: 'kiro', cx: 200, cy: 300, state: 'idle', color: 0, facing: 'down', walking: false }];
+    r.setWaitOrder('kiro');
+    r._draw();
+    const [x, y, w, h, id] = r._orderHitRects[0];
+    r._handleClick({ clientX: x + w / 2, clientY: y + h / 2 });
+    expect(calls).toEqual([['kiro', id, expect.any(String)]]);
+  });
+
+  it('wait-order agent stays put (no wander) and bubble cleared', () => {
+    const r = readyRenderer();
+    const agent = {
+      name: 'kiro', cx: 100, cy: 100, tx: 100, ty: 100,
+      state: 'idle', color: 0, facing: 'down', walking: true,
+      path: [[6, 6], [7, 6]], pathIdx: 0, pathGridSize: 16, wanderUntil: 0,
+      bubbleText: 'hi', bubbleUntil: Date.now() + 9999,
+    };
+    r.agents = [agent];
+    r.setWaitOrder('kiro');
+    r._tick();
+    expect(agent.cx).toBe(100);
+    expect(agent.walking).toBe(false);
+    expect(agent.bubbleText).toBe(null);
+  });
+
+  it('busy agent does NOT enter wait-order on setWaitOrder', () => {
+    const r = readyRenderer();
+    r.agents = [{ name: 'kiro', cx: 100, cy: 100, state: 'busy', color: 0, facing: 'down', walking: false }];
+    r.setWaitOrder('kiro');
+    expect(r._waitOrderName).toBe(null);
+    r._draw();
+    expect(r._orderHitRects.length).toBe(0);
+  });
+
+  it('wait-order auto-clears if agent turns busy', () => {
+    const r = readyRenderer();
+    const agent = { name: 'kiro', cx: 100, cy: 100, tx: 100, ty: 100, state: 'idle', color: 0, facing: 'down', walking: false, wanderUntil: 0 };
+    r.agents = [agent];
+    r.setWaitOrder('kiro');
+    expect(r._waitOrderName).toBe('kiro');
+    agent.state = 'busy';
+    r._tick();
+    expect(r._waitOrderName).toBe(null);
   });
 });

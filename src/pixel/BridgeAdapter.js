@@ -87,6 +87,9 @@ export function deriveStatus(name, health, healthAgents, pipelineRunningSet = nu
 
   if (healthAgent.alive > 0) return 'idle';
 
+  // mesh remote agents: no local sessions, treat healthy as idle
+  if (healthAgent.mode === 'mesh' && healthAgent.healthy) return 'idle';
+
   // alive = 0
   if (healthAgent.mode === 'pty' && healthAgent.healthy === false) return 'error';
   return 'offline';
@@ -139,6 +142,7 @@ export function adaptToPixelConfig(health, heartbeat, healthAgents, pipelines, o
   const agents = enabledAgents.map((a, idx) => {
     const status = deriveStatus(a.name, health, healthAgents, pipelineRunningSet);
     const hbMeta = heartbeat?.snapshot?.agents?.[a.name] ?? {};
+    const agentDetail = healthAgents?.agents?.find(d => d.name === a.name);
     const color = idx % SPRITE_COUNT;
 
     // v2.4.0: 优先 mapConfig zone; 没配置则 fallback 到 defaultSlots
@@ -166,8 +170,9 @@ export function adaptToPixelConfig(health, heartbeat, healthAgents, pipelines, o
       y,
       state: status,
       active: status !== 'offline',
-      description: hbMeta.description || '',
-      domains: hbMeta.domains || [],
+      description: hbMeta.description || agentDetail?.description || '',
+      domains: hbMeta.domains || agentDetail?.domains || [],
+      mesh: a.mode === 'mesh' ? true : false,
     };
   });
 

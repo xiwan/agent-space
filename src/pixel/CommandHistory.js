@@ -513,6 +513,14 @@ export class CommandHistory {
             } else {
               step._progress.push({ kind: d.kind, content: d.content });
             }
+          } else if (d.kind === 'message.part') {
+            // Collapse consecutive message.part chunks into one entry
+            const last = step._progress[step._progress.length - 1];
+            if (last && last.kind === 'message.part') {
+              last.content = (last.content || '') + (d.content || '');
+            } else {
+              step._progress.push({ kind: d.kind, content: d.content });
+            }
           } else {
             step._progress.push({ kind: d.kind, title: d.title, content: d.content, status: d.status, toolCallId: d.toolCallId, text: d.text });
           }
@@ -523,12 +531,19 @@ export class CommandHistory {
           const tail = step._thinking.trim().slice(-80);
           this.onAgentOutput(d.agent, `💭 ${tail}`, { duration: 1500 });
         }
-        // Bubble: message.part → agent output bubble
+        // Bubble: message.part → accumulate and show as sentence
         if (d.kind === 'message.part' && d.content && d.agent) {
-          const dedupKey = `prog:${rec.id}:${d.index}:${step._progress.length}`;
-          if (!this._seenOutputs.has(dedupKey)) {
-            this._seenOutputs.add(dedupKey);
-            this.onAgentOutput(d.agent, String(d.content).trim().slice(0, 140), { duration: 2000 });
+          if (!step._bubbleAccum) step._bubbleAccum = '';
+          step._bubbleAccum += d.content;
+          // Flush when sentence boundary or 60+ chars accumulated
+          const acc = step._bubbleAccum.trim();
+          if (acc.length >= 60 || /[。！？.!?\n]$/.test(acc)) {
+            const dedupKey = `prog:${rec.id}:${d.index}:bubble:${step._progress.length}`;
+            if (!this._seenOutputs.has(dedupKey)) {
+              this._seenOutputs.add(dedupKey);
+              this.onAgentOutput(d.agent, acc.slice(0, 140), { duration: 3000 });
+            }
+            step._bubbleAccum = '';
           }
         }
         // Bubble: tool.start → show tool name

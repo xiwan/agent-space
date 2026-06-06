@@ -129,6 +129,7 @@ export class HeartbeatView {
       injectTtl: TTL_DEFAULT,          // v2.16.0
       pingAgent: null,                 // v2.16.0: 选中要 ping 的 agent
       pingPending: false,              // v2.16.0: ping in-flight
+      pingAllPending: false,           // ping all in-flight
       injectPending: false,            // v2.16.0
       clearPending: false,             // v2.16.0
       expandedPrompt: new Set(),       // log ts (string) 集合
@@ -557,6 +558,50 @@ export class HeartbeatView {
     }
   }
 
+  /**
+   * Ping all enabled agents in parallel to wake up offline ones.
+   */
+  async pingAll() {
+    if (!this._fetch) return;
+    const agents = this._state.enabledAgents || [];
+    if (agents.length === 0) return;
+    if (this._state.pingAllPending) return;
+    this._state.pingAllPending = true;
+    this._state.interveneStatus = { kind: 'pending', text: `pinging all ${agents.length} agents…` };
+    this._render();
+    let ok = 0, fail = 0;
+    const results = await Promise.allSettled(agents.map(async (agent) => {
+      try {
+        const r = await this._fetchWithTimeout(`/api/heartbeat/${encodeURIComponent(agent)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        }, FETCH_TIMEOUT_MS_PING);
+        let body = null;
+        try { body = await r.json(); } catch {}
+        if (!r || !r.ok || !body || body.error) { fail++; return; }
+        ok++;
+        const entry = {
+          ts: this._now() / 1000,
+          agent: body.agent || agent,
+          silent: !!body.silent,
+          duration: body.duration ?? null,
+          response: body.silent ? null : (body.response ?? ''),
+          prompt_preview: body.prompt_preview || '',
+          _pinged: true,
+        };
+        return entry;
+      } catch { fail++; }
+    }));
+    const entries = results.map(r => r.value).filter(Boolean);
+    if (entries.length) {
+      this._state.logs = [...entries, ...(this._state.logs || [])];
+    }
+    this._state.interveneStatus = { kind: ok > 0 ? 'ok' : 'error', text: `ping all done: ${ok} ok, ${fail} failed` };
+    this._state.pingAllPending = false;
+    this._render();
+  }
+
   // ============================================================
   // progress bar (controls 行下方一条 2px 进度条)
   // ============================================================
@@ -867,6 +912,7 @@ export class HeartbeatView {
           <div class="hb-intervene-row">
             <select class="hb-ping-select" ${pinging || enabled.length === 0 ? 'disabled' : ''}>${agentOpts}</select>
             <button class="hb-ping-btn" type="button" ${pinging || enabled.length === 0 ? 'disabled' : ''}>${pinging ? '…' : 'Ping'}</button>
+            <button class="hb-ping-all-btn" type="button" ${this._state.pingAllPending || enabled.length === 0 ? 'disabled' : ''}>${this._state.pingAllPending ? '…' : 'Ping All'}</button>
           </div>
         </div>
 
@@ -929,6 +975,8 @@ export class HeartbeatView {
     if (pingSel) pingSel.addEventListener('change', (e) => this.setPingAgent(e.target.value));
     const pingBtn = this.container.querySelector('.hb-ping-btn');
     if (pingBtn) pingBtn.addEventListener('click', () => this.pingAgent());
+    const pingAllBtn = this.container.querySelector('.hb-ping-all-btn');
+    if (pingAllBtn) pingAllBtn.addEventListener('click', () => this.pingAll());
   }
 
   _renderLogs() {
