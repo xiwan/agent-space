@@ -48,8 +48,13 @@ export function buildArtifactPayload(artifact, input, selectedAgents) {
     }
     body.context = ctx;
   }
-  // Attach step artifact metadata for UI rendering
-  const _artifacts = (artifact.steps || []).map(s => s.artifact || null);
+  // Attach step artifact metadata for UI rendering (resolve {{uid}} in pattern)
+  const _artifacts = (artifact.steps || []).map(s => {
+    if (!s.artifact) return null;
+    const a = { ...s.artifact };
+    if (a.pattern) a.pattern = renderTemplate(a.pattern, input, uid);
+    return a;
+  });
   return { endpoint: '/api/pipelines', body, _artifacts };
 }
 

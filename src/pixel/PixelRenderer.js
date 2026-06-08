@@ -669,7 +669,7 @@ export class PixelRenderer {
     a.bubbleText = String(text);
     const duration = (opts && Number.isFinite(opts.duration) && opts.duration > 0)
       ? opts.duration
-      : (4000 + Math.random() * 2000); // 默认 4-6s
+      : 5000;
     a.bubbleUntil = now + duration;
     // 让冷却从此刻起正常算 (避免立刻被新 chitchat 抢)
     a.bubbleNextAt = a.bubbleUntil + 1500;
@@ -1065,9 +1065,17 @@ export class PixelRenderer {
     const raw = (a.bubbleText || '').trim();
     if (!raw) return;
 
+    // Fade-out in last 800ms
+    const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    const remaining = a.bubbleUntil - now;
+    const fadeMs = 800;
+    const alpha = remaining < fadeMs ? Math.max(0, remaining / fadeMs) : 1;
+    if (alpha <= 0) return;
+
     ctx.save();
+    ctx.globalAlpha = alpha;
     ctx.font = '10px "Courier New", monospace';
-    ctx.textAlign = 'center';
+    ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
 
     // 多行换行 (字符级断行, 中英文混排)
@@ -1118,11 +1126,12 @@ export class PixelRenderer {
     ctx.fillRect(tailX - 2, tailY,     4, 1);
     ctx.fillRect(tailX - 1, tailY + 1, 2, 1);
 
-    // 4. 文字 (逐行)
+    // 4. 文字 (逐行, 左对齐)
     ctx.fillStyle = '#1f2937';
+    const textX = bx + padX;
     const firstLineMid = by + padY + lineH / 2;
     for (let i = 0; i < lines.length; i++) {
-      ctx.fillText(lines[i], a.cx, firstLineMid + i * lineH);
+      ctx.fillText(lines[i], textX, firstLineMid + i * lineH);
     }
 
     ctx.restore();

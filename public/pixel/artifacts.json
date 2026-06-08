@@ -4,7 +4,7 @@
     "name": "🎮 做个游戏",
     "description": "Prompt 工程 → 实现 → 部署",
     "mode": "sequence",
-    "context": {"shared_cwd": "/tmp/opengame-{{uid}}"},
+    "context": {"shared_cwd": "/tmp/opengame"},
     "steps": [
       {
         "agent": "harness",
@@ -13,12 +13,12 @@
       },
       {
         "agent": "opengame",
-        "promptTemplate": "读取当前目录下的 gdd.md，按其中描述实现游戏。\n\n输出文件：game.html\n技术约束：单 HTML 文件，纯 vanilla JS 加 Canvas，不使用任何外部库，浏览器直接打开即可玩。\n\n直接开始写代码，不要再做需求分析或方案讨论。",
-        "artifact": {"type": "file", "label": "游戏文件", "pattern": "game.html"}
+        "promptTemplate": "读取当前目录下的 gdd.md，按其中描述实现游戏。\n\n输出文件：{{uid}}.html\n技术约束：单 HTML 文件，纯 vanilla JS 加 Canvas，不使用任何外部库，浏览器直接打开即可玩。\n\n直接开始写代码，不要再做需求分析或方案讨论。",
+        "artifact": {"type": "file", "label": "游戏文件", "pattern": "{{uid}}.html"}
       },
       {
         "agent": "kiro",
-        "promptTemplate": "将当前目录下的 game.html 部署到 S3 并刷新 CDN 缓存。游戏 ID：{{uid}}。\n\n执行：\n1. aws s3 cp game.html s3://opengame-demo-summit-2026/{{uid}}/index.html --content-type text/html --region us-east-1\n2. aws cloudfront create-invalidation --distribution-id E3MU4MKLH39XO9 --paths /{{uid}}/*\n3. 报告访问地址 https://d1x0y8igxbg2j0.cloudfront.net/{{uid}}/",
+        "promptTemplate": "将当前目录下的 {{uid}}.html 部署到 S3 并刷新 CDN 缓存。游戏 ID：{{uid}}。\n\n执行：\n1. aws s3 cp {{uid}}.html s3://opengame-demo-summit-2026/{{uid}}/index.html --content-type text/html --region us-east-1\n2. aws cloudfront create-invalidation --distribution-id E3MU4MKLH39XO9 --paths /{{uid}}/*\n3. 报告访问地址 https://d1x0y8igxbg2j0.cloudfront.net/{{uid}}/",
         "artifact": {"type": "url", "label": "URL", "pattern": "https://d1x0y8igxbg2j0.cloudfront.net"}
       }
     ]

@@ -741,6 +741,18 @@
     }
     .ch-cancel-btn:hover { background: #991b1b; }
     .ch-cancel-btn:disabled { opacity: 0.5; cursor: default; }
+    .ch-rerun-btn {
+      font-size: 9px;
+      color: #a5d6a7;
+      background: #1b5e20;
+      border: 1px solid #2e7d32;
+      border-radius: 3px;
+      padding: 1px 6px;
+      cursor: pointer;
+      margin-left: 4px;
+    }
+    .ch-rerun-btn:hover { background: #2e7d32; }
+    .ch-rerun-btn:disabled { opacity: 0.5; cursor: default; }
     /* v2.11.1: server-side error (业务错, 与 .ch-error 网络错区分) */
     .ch-error-server {
       background: #7f1d1d;
@@ -1546,24 +1558,27 @@
         padding: 3px 6px;
       }
 
-      /* canvas: 占满 stage 宽度, 保持像素比例 */
+      /* canvas + sidebar 各占 50% 高度 */
       #pixelStage {
         padding: 4px;
+        flex: 1;
+        min-height: 0;
       }
       #pixelCanvas {
         width: 100%;
-        height: auto;
-        max-height: 60vh;
+        height: 100%;
+        max-height: 100%;
       }
 
-      /* sidebar 紧凑卡片 */
       #pixelSidebar {
+        flex: 1;
         width: 100%;
-        max-width: 100%;        /* v2.18.0 fix: 覆盖桌面端 max-width: 70vw, 不然移动端只占 70vw */
-        min-width: 0;           /* 同样覆盖桌面端 min-width: 200px (移动端窄屏可能 < 200) */
+        max-width: 100%;
+        min-width: 0;
+        min-height: 0;
         border-left: 0;
         border-top: 1px solid #334155;
-        max-height: 60vh; /* v2.18.0: composer 并入后扩大 (从 28vh) */
+        max-height: none;
       }
       /* v2.18.0: 移动端纵向布局下, 横向 resizer 无意义 → 隐藏 */
       #sidebarResizer { display: none; }

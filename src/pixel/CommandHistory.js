@@ -899,8 +899,54 @@ export class CommandHistory {
         }
       });
     });
+    // Rerun button handler
+    this.container.querySelectorAll('.ch-rerun-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const remoteId = btn.dataset.remoteId;
+        btn.disabled = true;
+        btn.textContent = '…';
+        try {
+          const res = await this.client.rerunPipeline(remoteId);
+          btn.textContent = '🔄 Rerun ✓';
+          // Add new pipeline to history tracking
+          if (res.pipeline_id) {
+            const rec = this._findByRemoteId(remoteId);
+            this._addRerunRecord(res, rec);
+          }
+        } catch (e) {
+          btn.textContent = '🔄 Error';
+          btn.disabled = false;
+        }
+      });
+    });
     // Elapsed timer
     this._updateElapsed();
+  }
+
+  _findByRemoteId(remoteId) {
+    return this._records.find(r => r.remoteId === remoteId) || null;
+  }
+
+  _addRerunRecord(res, originalRec) {
+    const rec = {
+      id: genId(),
+      kind: 'pipeline',
+      mode: originalRec?.mode || 'sequence',
+      agents: originalRec?.agents || [],
+      prompt: originalRec?.prompt || '(rerun)',
+      submittedAt: Date.now(),
+      completedAt: null,
+      status: 'pending',
+      remoteId: res.pipeline_id,
+      output: null,
+      error: null,
+      _artifacts: originalRec?._artifacts || null,
+    };
+    this._subscribeSSE(rec);
+    this._records.unshift(rec);
+    if (this._records.length > MAX_RECORDS) this._records.length = MAX_RECORDS;
+    this._persist();
+    this._render();
   }
 
   _updateElapsed() {
@@ -1029,6 +1075,7 @@ export class CommandHistory {
           ${durationLine}
           ${(!TERMINAL_STATUSES.has(r.status) && r.submittedAt) ? `<span class="ch-elapsed" data-started="${r.submittedAt}"></span>` : ''}
           ${(!TERMINAL_STATUSES.has(r.status) && r.remoteId) ? `<button class="ch-cancel-btn" data-remote-id="${escapeHtml(r.remoteId)}" data-kind="${escapeHtml(r.kind)}">✕ Cancel</button>` : ''}
+          ${(TERMINAL_STATUSES.has(r.status) && r.remoteId && r.kind === 'pipeline') ? `<button class="ch-rerun-btn" data-remote-id="${escapeHtml(r.remoteId)}">🔄 Rerun</button>` : ''}
           <span class="ch-time">${ts}</span>
         </div>
         <div class="ch-agents">${escapeHtml(agentsStr)}</div>

@@ -90,6 +90,14 @@ export class CommandClient {
     return this._post(`/api/pipelines/${encodeURIComponent(pipelineId)}/cancel`, {});
   }
 
+  async rerunPipeline(pipelineId, opts = {}) {
+    if (!pipelineId) throw new Error('rerunPipeline: pipelineId required');
+    const body = {};
+    if (opts.from_step != null) body.from_step = opts.from_step;
+    if (opts.prompt_override) body.prompt_override = opts.prompt_override;
+    return this._post(`/api/pipelines/${encodeURIComponent(pipelineId)}/rerun`, body);
+  }
+
   async cancelJob(jobId) {
     if (!jobId) throw new Error('cancelJob: jobId required');
     return this._post(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {});
