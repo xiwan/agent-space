@@ -687,6 +687,12 @@
     /* v2.24.3: accordion — 展开一张卡片时隐藏其他 */
     .ch-accordion-active .ch-card { display: none; }
     .ch-accordion-active .ch-card.ch-card-expanded { display: block; }
+    /* v2.24.5: rerun 新卡片高亮闪烁, 提示"已新建" */
+    @keyframes chCardFlash {
+      0%   { background: #2a3a55; box-shadow: 0 0 0 2px #3b82f6; }
+      100% { background: inherit; box-shadow: none; }
+    }
+    .ch-card.ch-card-flash { animation: chCardFlash 1.5s ease-out; }
     .ch-card.ch-type-stock    { background: #1a1f2e; border-left-color: #f59e0b; }
     .ch-card.ch-type-game     { background: #1a2e1e; border-left-color: #10b981; }
     .ch-card.ch-type-brain    { background: #1e1a2e; border-left-color: #a78bfa; }

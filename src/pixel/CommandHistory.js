@@ -390,6 +390,7 @@ export class CommandHistory {
     this._records = []; // 最新在前
     this._timer = null;
     this._expandedCardId = null; // v2.24.3: accordion — 当前展开的卡片 id
+    this._flashRecId = null; // v2.24.5: render 后需高亮的卡片 id (rerun 新卡)
     this._seenOutputs = new Set(); // dedup: `${recId}:${stepIdx}`
     // v2.14.2: SSE subscriptions (pipeline_id → EventSource)
     this._sseMap = new Map();
@@ -1336,7 +1337,9 @@ export class CommandHistory {
             this._addRerunRecord(res, rec);
           }
         } catch (e) {
-          btn.textContent = '🔄 Error';
+          // v2.24.5: 区分 404 (后端不支持) vs 其他错误, 并打印原因
+          console.error('rerunPipeline failed', e);
+          btn.textContent = /404|not.found/i.test(e.message) ? '🔄 N/A' : '🔄 Error';
           btn.disabled = false;
         }
       });
@@ -1377,6 +1380,19 @@ export class CommandHistory {
     });
     // Elapsed timer
     this._updateElapsed();
+    // v2.24.5: rerun 新卡片滚动到视野 + 高亮一下, 让"有效果"可见
+    if (this._flashRecId) {
+      const flashId = this._flashRecId;
+      this._flashRecId = null;
+      const card = this.container.querySelector(`.ch-card[data-rec-id="${flashId}"]`);
+      if (card) {
+        if (typeof card.scrollIntoView === 'function') {
+          card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+        card.classList.add('ch-card-flash');
+        setTimeout(() => card.classList.remove('ch-card-flash'), 1500);
+      }
+    }
     // v2.24.3: 重新应用 accordion 状态 (re-render 后保持)
     this._applyAccordion();
   }
@@ -1423,8 +1439,23 @@ export class CommandHistory {
     this._subscribeSSE(rec);
     this._records.unshift(rec);
     if (this._records.length > MAX_RECORDS) this._records.length = MAX_RECORDS;
+    // v2.24.5: rerun 新卡片必须可见 — 清掉 accordion 隐藏 (否则被 display:none 藏住),
+    // 并标记 flash, render 后滚动到它并短暂高亮.
+    this._expandedCardId = null;
+    this._flashRecId = rec.id;
     this._persist();
     this._render();
+    return rec;
+  }
+
+  /**
+   * v2.24.5: 按 bridge 端 pipeline/job id 反查本地记录.
+   * rerun handler 需要拿源记录来继承 mode/agents/prompt/artifacts.
+   * (此前只有调用、无定义 → 抛 TypeError 被 catch 吞掉 → rerun 看似无效)
+   */
+  _findByRemoteId(remoteId) {
+    if (!remoteId) return null;
+    return this._records.find(r => r.remoteId === remoteId) || null;
   }
 
   _updateElapsed() {

@@ -11,6 +11,8 @@ function mkClient(over = {}) {
     pollPipelineStepLive: over.pollPipelineStepLive || vi.fn().mockResolvedValue({ content: '', parts_count: 0 }),
     cancelPipeline: over.cancelPipeline || vi.fn().mockResolvedValue({ status: 'cancelled' }),
     cancelJob: over.cancelJob || vi.fn().mockResolvedValue({ status: 'cancelled' }),
+    // v2.24.5: rerun
+    rerunPipeline: over.rerunPipeline || vi.fn().mockResolvedValue({ pipeline_id: 'rerun-pid' }),
     // v2.24.0: reviseGame deps
     submitRun: over.submitRun || vi.fn().mockResolvedValue({ session_id: 's1', output: [{ parts: [{ content: 'done' }] }] }),
     submitJob: over.submitJob || vi.fn().mockResolvedValue({ job_id: 'job-x' }),
@@ -1351,6 +1353,74 @@ describe('v2.19.0 — Cancel button graceful 404 degrade', () => {
     await new Promise(r => setTimeout(r, 0));
     await new Promise(r => setTimeout(r, 0));
     expect(btn.textContent).toBe('✕ Error');
+  });
+
+  // v2.24.5: rerun regression — _findByRemoteId 曾未定义导致 rerun 静默失败
+  it('rerun success → adds a new pipeline record + button shows ✓', async () => {
+    const rerunPipeline = vi.fn().mockResolvedValue({ pipeline_id: 'new-pid' });
+    const client = mkClient({ rerunPipeline });
+    history = new CommandHistory(container, { client, pollIntervalMs: 1000000 });
+    history.pushSubmission({ kind: 'pipeline', mode: 'sequence', agents: ['a'], prompt: 'p' }, { pipeline_id: 'orig-pid' });
+    const rec = history.list()[0];
+    rec.status = 'succeeded'; // rerun 按钮只在终态渲染
+    history._render();
+    const btn = container.querySelector('.ch-rerun-btn');
+    expect(btn).not.toBeNull();
+    btn.click();
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+    expect(rerunPipeline).toHaveBeenCalledWith('orig-pid');
+    expect(btn.textContent).toBe('🔄 Rerun ✓');
+    // 关键: 新记录被加入 (此前因 _findByRemoteId 未定义而永不发生)
+    const list = history.list();
+    expect(list.length).toBe(2);
+    expect(list[0].remoteId).toBe('new-pid');
+    expect(list[0].status).toBe('pending');
+    // 继承源记录的 mode/agents
+    expect(list[0].mode).toBe('sequence');
+    expect(list[0].agents).toEqual(['a']);
+  });
+
+  it('_findByRemoteId is defined and finds source record', () => {
+    const client = mkClient();
+    history = new CommandHistory(container, { client, pollIntervalMs: 1000000 });
+    history.pushSubmission({ kind: 'pipeline', mode: 'sequence', agents: ['a'], prompt: 'p' }, { pipeline_id: 'find-me' });
+    expect(typeof history._findByRemoteId).toBe('function');
+    expect(history._findByRemoteId('find-me')?.remoteId).toBe('find-me');
+    expect(history._findByRemoteId('nope')).toBeNull();
+    expect(history._findByRemoteId(null)).toBeNull();
+  });
+
+  it('rerun clears accordion so the new card is visible', async () => {
+    const rerunPipeline = vi.fn().mockResolvedValue({ pipeline_id: 'np2' });
+    const client = mkClient({ rerunPipeline });
+    history = new CommandHistory(container, { client, pollIntervalMs: 1000000 });
+    history.pushSubmission({ kind: 'pipeline', mode: 'sequence', agents: ['a'], prompt: 'p' }, { pipeline_id: 'op2' });
+    const rec = history.list()[0];
+    rec.status = 'succeeded';
+    history._expandedCardId = rec.id; // 模拟某卡片被展开 (会触发 accordion 隐藏)
+    history._render();
+    container.querySelector('.ch-rerun-btn').click();
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+    expect(history._expandedCardId).toBeNull();
+    expect(container.classList.contains('ch-accordion-active')).toBe(false);
+  });
+
+  it('rerun 404 → button shows 🔄 N/A, no new record', async () => {
+    const rerunPipeline = vi.fn().mockRejectedValue(new Error('HTTP 404 not found'));
+    const client = mkClient({ rerunPipeline });
+    history = new CommandHistory(container, { client, pollIntervalMs: 1000000 });
+    history.pushSubmission({ kind: 'pipeline', mode: 'sequence', agents: ['a'], prompt: 'p' }, { pipeline_id: 'op3' });
+    const rec = history.list()[0];
+    rec.status = 'succeeded';
+    history._render();
+    const btn = container.querySelector('.ch-rerun-btn');
+    btn.click();
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+    expect(btn.textContent).toBe('🔄 N/A');
+    expect(history.list().length).toBe(1);
   });
 });
 
