@@ -35,7 +35,7 @@ const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'completed', 'failure'
 const STORAGE_KEY = 'pixel.commandHistory.v1';
 const STORAGE_VERSION = 1;
 const MAX_RECORDS = 50;            // FIFO
-const MAX_OUTPUT_BYTES = 10 * 1024; // 单条 output 序列化超此 → 截断
+const MAX_OUTPUT_BYTES = 50 * 1024; // 单条 output 序列化超此 → 截断
 
 let _idCounter = 0;
 function genId() {
@@ -128,7 +128,7 @@ export function extractDisplayText(remote, kind, fallbackAgent = null) {
   if (!remote || typeof remote !== 'object') return empty;
 
   if (kind === 'run' || kind === 'job') {
-    const text = pickSingleText(remote);
+    const text = stripToolNoise(pickSingleText(remote));
     if (text == null) return empty;
     return {
       turns: [{ agent: fallbackAgent, text: truncate(text, MAX_TURN_TEXT) }],
@@ -141,7 +141,7 @@ export function extractDisplayText(remote, kind, fallbackAgent = null) {
     if (Array.isArray(remote.transcript) && remote.transcript.length > 0) {
       const turns = remote.transcript
         .map(t => {
-          const text = pickSingleText(t);
+          const text = stripToolNoise(pickSingleText(t));
           if (text == null) return null;
           const out = { agent: t.agent || fallbackAgent, text: truncate(text, MAX_TURN_TEXT) };
           if (typeof t.turn === 'number') out.turn = t.turn;
@@ -149,13 +149,28 @@ export function extractDisplayText(remote, kind, fallbackAgent = null) {
           return out;
         })
         .filter(Boolean);
+      // Append chained steps (auto-chain summary) if present
+      if (Array.isArray(remote.steps)) {
+        for (const s of remote.steps) {
+          if (!s || !s._isChained) continue;
+          const text = stripToolNoise(pickSingleText(s));
+          const out = { agent: s.agent || fallbackAgent, text: text ? truncate(text, MAX_TURN_TEXT) : '' };
+          if (typeof s.duration === 'number') out.duration = s.duration;
+          if (typeof s.status === 'string') out.status = s.status;
+          if (s.prompt_preview) out._prompt_preview = s.prompt_preview;
+          if (s.error) out.text = out.text || `❌ ${s.error}`;
+          if (Array.isArray(s._progress)) out._progress = s._progress;
+          out._isChained = true;
+          turns.push(out);
+        }
+      }
       if (turns.length > 0) return { turns, hasContent: true };
     }
     // 向后兼容: response.turns 是数组形式 (老测试 fixture, 非 acp-bridge 真实形态)
     if (Array.isArray(remote.turns) && remote.turns.length > 0) {
       const turns = remote.turns
         .map(t => {
-          const text = pickSingleText(t);
+          const text = stripToolNoise(pickSingleText(t));
           if (text == null) return null;
           const out = { agent: t.agent || fallbackAgent, text: truncate(text, MAX_TURN_TEXT) };
           if (typeof t.turn === 'number') out.turn = t.turn;
@@ -176,13 +191,13 @@ export function extractDisplayText(remote, kind, fallbackAgent = null) {
 
       const turns = remote.steps
         .map(s => {
-          const text = pickSingleText(s);
+          const text = stripToolNoise(pickSingleText(s));
           // v2.14.2: show all steps (including pending/running without output)
           const out = { agent: s.agent || fallbackAgent, text: text ? truncate(text, MAX_TURN_TEXT) : '' };
           if (typeof s.duration === 'number') out.duration = s.duration;
           if (typeof s.status === 'string' && s.status) out.status = s.status;
           if (s.error) out.text = out.text || `❌ ${s.error}`;
-          if (!out.text && s.prompt_preview) out._prompt_preview = s.prompt_preview;
+          if (s.prompt_preview) out._prompt_preview = s.prompt_preview;
           if (!out.text && !s.prompt_preview && s.status) out.text = `⏳ ${s.status}…`;
           if (isWinnerOf(s)) out.isWinner = true;
           if (Array.isArray(s._progress)) out._progress = s._progress;
@@ -226,7 +241,9 @@ export function extractPipelineMetadata(remote) {
  */
 function pickSingleText(obj) {
   if (!obj || typeof obj !== 'object') return null;
-  // 0. result 是字符串 (v2.11.1: ACP Bridge /jobs/{id} 真实形态)
+  // 0. SSE accumulated message.part text — full output (preferred over truncated result_preview)
+  if (typeof obj._accumulatedText === 'string' && obj._accumulatedText.trim()) return obj._accumulatedText;
+  // 0b. result 是字符串 (v2.11.1: ACP Bridge /jobs/{id} 真实形态)
   if (typeof obj.result === 'string' && obj.result.trim()) return obj.result;
   // 1. ACP output[*].parts[*].content
   if (Array.isArray(obj.output)) {
@@ -257,6 +274,17 @@ function truncate(s, max) {
   const str = String(s);
   if (str.length <= max) return str;
   return str.slice(0, max) + ' … (truncated)';
+}
+
+/** Strip inline tool-event noise from agent result text (mesh agents embed these in output). */
+function stripToolNoise(text) {
+  if (!text) return text;
+  return text
+    .replace(/^\[tool\.(start|done)\].*$/gm, '')
+    .replace(/^\.{3}[^\n]*\(completed\)\s*$/gm, '')
+    .replace(/^\.{3}[^\n]*\(pending\)\s*$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 /**
@@ -391,6 +419,7 @@ export class CommandHistory {
       output: ctx.kind === 'run' ? response : null,
       error: null,
       _artifacts: ctx._artifacts || null, // per-step artifact metadata
+      _artifactName: ctx._artifactName || '', // e.g. "🎮 做个游戏", "📈 股票调研"
     };
     if (rec.kind === 'run') {
       rec.completedAt = rec.submittedAt;
@@ -436,6 +465,13 @@ export class CommandHistory {
     for (const rec of this._records) {
       if (rec.kind === 'pipeline' && rec.remoteId && !TERMINAL_STATUSES.has(rec.status) && !this._sseMap.has(rec.remoteId)) {
         this._subscribeSSE(rec);
+      }
+    }
+    // Resolve chained pipelines that were missed (page refresh, SSE lost)
+    for (const rec of this._records) {
+      if (rec.kind === 'pipeline' && rec.remoteId &&
+          TERMINAL_STATUSES.has(rec.status) && !rec._nextResolved && !rec._nextPipelineId) {
+        this._followNextPipeline(rec);
       }
     }
   }
@@ -503,6 +539,11 @@ export class CommandHistory {
         // Accumulate thinking text per step for bubble display
         if (!step._thinking) step._thinking = '';
         if (d.kind === 'message.thinking' && d.content) step._thinking += d.content;
+        // Accumulate message.part text as fallback for result_preview
+        if (d.kind === 'message.part' && d.content) {
+          if (!step._accumulatedText) step._accumulatedText = '';
+          step._accumulatedText += d.content;
+        }
         // Cap progress entries to avoid unbounded growth
         if (step._progress.length < 200) {
           // Collapse consecutive thinking chunks into one entry
@@ -563,10 +604,12 @@ export class CommandHistory {
         ensureOutput();
         if (!Array.isArray(rec.output.steps)) rec.output.steps = [];
         while (rec.output.steps.length <= d.index) rec.output.steps.push({});
+        const prev = rec.output.steps[d.index] || {};
         rec.output.steps[d.index] = {
+          ...prev,
           agent: d.agent,
           status: d.status || 'completed',
-          result: d.result_preview || '',
+          result: d.result_preview || prev._accumulatedText || '',
           duration: d.duration,
         };
         this._persist();
@@ -606,8 +649,10 @@ export class CommandHistory {
         if (d.error) rec.output.error = d.error;
       } catch {}
       this._closeSSE(rec.remoteId);
+      // Check for auto-chained next pipeline (async, with retry delay for auto-chain to complete)
       this._persist();
       this._render();
+      setTimeout(() => this._followNextPipeline(rec), 3000);
     });
 
     es.onerror = () => {
@@ -619,6 +664,186 @@ export class CommandHistory {
   _closeSSE(pipelineId) {
     const es = this._sseMap.get(pipelineId);
     if (es) { es.close(); this._sseMap.delete(pipelineId); }
+  }
+
+  /**
+   * After a pipeline completes, check if it triggered an auto-chained next
+   * pipeline (e.g. parallel-then-judge). If so, subscribe to the chained
+   * pipeline's SSE and append its steps to the same history card.
+   */
+  async _followNextPipeline(rec) {
+    if (!rec.remoteId) return;
+    if (rec._nextResolved) return; // already resolved
+    // Retry up to 5 times with 3s delay — auto-chain needs time
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        const data = await this.client.pollPipeline(rec.remoteId);
+        const nextId = data?.next_pipeline_id;
+        if (!nextId) {
+          await new Promise(r => setTimeout(r, 3000));
+          continue;
+        }
+        rec._nextPipelineId = nextId;
+        // Try to get the chained pipeline's result directly
+        const nextData = await this.client.pollPipeline(nextId);
+        if (nextData && nextData.steps) {
+          const ensureOutput = () => {
+            if (!rec.output || typeof rec.output !== 'object') rec.output = {};
+            if (!Array.isArray(rec.output.steps)) rec.output.steps = [];
+          };
+          ensureOutput();
+          if (!rec._nextStepBase) rec._nextStepBase = rec.output.steps.length;
+          for (let i = 0; i < nextData.steps.length; i++) {
+            const s = nextData.steps[i];
+            const idx = rec._nextStepBase + i;
+            while (rec.output.steps.length <= idx) rec.output.steps.push({});
+            rec.output.steps[idx] = {
+              agent: s.agent,
+              status: s.status || 'completed',
+              result: s.result || '',
+              duration: s.duration,
+              _isChained: true,
+            };
+          }
+          // Update overall status
+          if (nextData.status === 'completed' || nextData.status === 'succeeded') {
+            rec.status = 'succeeded';
+          } else if (nextData.status === 'failed') {
+            rec.status = 'failed';
+            if (nextData.error) rec.error = nextData.error;
+          } else {
+            // Still running — subscribe SSE for live updates
+            rec.status = 'running';
+            this._subscribeNextSSE(rec, nextId);
+          }
+          if (nextData.duration && rec.output.duration) {
+            rec.output.duration += nextData.duration;
+          }
+          rec.output.report_url = nextData.report_url || '';
+        } else {
+          // Next pipeline exists but no steps yet — subscribe SSE
+          rec.status = 'running';
+          this._subscribeNextSSE(rec, nextId);
+        }
+        rec._nextResolved = true;
+        this._persist();
+        this._render();
+        return;
+      } catch {}
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+
+  /**
+   * Subscribe to a chained (next) pipeline's SSE events and append its steps
+   * to the parent record's output.steps array — so the user sees a continuous
+   * flow in a single card.
+   */
+  _subscribeNextSSE(rec, nextPipelineId) {
+    if (typeof EventSource === 'undefined') return;
+    const url = `/api/pipelines/${encodeURIComponent(nextPipelineId)}/events`;
+    const es = new EventSource(url);
+    this._sseMap.set(nextPipelineId, es);
+
+    const ensureOutput = () => {
+      if (!rec.output || typeof rec.output !== 'object') rec.output = {};
+      if (!Array.isArray(rec.output.steps)) rec.output.steps = [];
+    };
+    // Offset: chained steps appear after the parent's steps
+    const baseIdx = () => {
+      ensureOutput();
+      // Find current max index from parent steps (before chaining)
+      if (!rec._nextStepBase) rec._nextStepBase = rec.output.steps.length;
+      return rec._nextStepBase;
+    };
+
+    es.addEventListener('step_started', (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        const idx = baseIdx() + d.index;
+        ensureOutput();
+        while (rec.output.steps.length <= idx) rec.output.steps.push({});
+        rec.output.steps[idx] = { agent: d.agent, status: 'running', _progress: [], prompt_preview: d.prompt_preview || '', _isChained: true };
+        this._persist();
+        this._render();
+        if (d.agent) this.onAgentOutput(d.agent, `▶ 汇总: ${d.prompt_preview || ''}`.trim().slice(0, 140));
+      } catch {}
+    });
+
+    es.addEventListener('step_progress', (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        const idx = baseIdx() + d.index;
+        ensureOutput();
+        while (rec.output.steps.length <= idx) rec.output.steps.push({});
+        const step = rec.output.steps[idx];
+        if (!step.agent && d.agent) step.agent = d.agent;
+        if (!Array.isArray(step._progress)) step._progress = [];
+        if (step._progress.length < 200) {
+          if (d.kind === 'message.part') {
+            const last = step._progress[step._progress.length - 1];
+            if (last && last.kind === 'message.part') last.content = (last.content || '') + (d.content || '');
+            else step._progress.push({ kind: d.kind, content: d.content });
+          } else if (d.kind === 'message.thinking') {
+            const last = step._progress[step._progress.length - 1];
+            if (last && last.kind === 'message.thinking') last.content = (last.content || '') + (d.content || '');
+            else step._progress.push({ kind: d.kind, content: d.content });
+          } else {
+            step._progress.push({ kind: d.kind, title: d.title, content: d.content, status: d.status });
+          }
+        }
+        this._render();
+        if (d.kind === 'message.part' && d.content && d.agent) {
+          this.onAgentOutput(d.agent, d.content.trim().slice(0, 140), { duration: 3000 });
+        }
+      } catch {}
+    });
+
+    es.addEventListener('step_completed', (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        const idx = baseIdx() + d.index;
+        ensureOutput();
+        while (rec.output.steps.length <= idx) rec.output.steps.push({});
+        rec.output.steps[idx] = { agent: d.agent, status: d.status || 'completed', result: d.result_preview || '', duration: d.duration, _isChained: true };
+        this._persist();
+        this._render();
+        if (d.agent && d.result_preview) this.onAgentOutput(d.agent, String(d.result_preview).trim().slice(0, 140));
+      } catch {}
+    });
+
+    es.addEventListener('step_failed', (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        const idx = baseIdx() + d.index;
+        ensureOutput();
+        while (rec.output.steps.length <= idx) rec.output.steps.push({});
+        rec.output.steps[idx] = { agent: d.agent, status: 'failed', error: d.error || 'unknown error', duration: d.duration, _isChained: true };
+        this._persist();
+        this._render();
+      } catch {}
+    });
+
+    es.addEventListener('pipeline_done', (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        rec.status = normalizeStatus(d.status);
+        rec.completedAt = Date.now();
+        if (d.error) rec.error = d.error;
+        ensureOutput();
+        rec.output.status = d.status;
+        // Sum durations
+        if (typeof d.duration === 'number' && typeof rec.output.duration === 'number') {
+          rec.output.duration += d.duration;
+        }
+        if (d.report_url) rec.output.report_url = d.report_url;
+      } catch {}
+      this._closeSSE(nextPipelineId);
+      this._persist();
+      this._render();
+    });
+
+    es.onerror = () => { this._closeSSE(nextPipelineId); };
   }
 
   async _tick() {
@@ -822,7 +1047,8 @@ export class CommandHistory {
     const lines = [];
     for (const p of progress) {
       if (p.kind === 'tool.start') {
-        lines.push(`<span class="ch-prog-tool">🔧 ${escapeHtml(p.title || 'tool')}</span>`);
+        if (!p.title) continue; // skip empty tool events
+        lines.push(`<span class="ch-prog-tool">🔧 ${escapeHtml(p.title)}</span>`);
       } else if (p.kind === 'tool.done') {
         const icon = p.status === 'completed' ? '✓' : '✗';
         const name = p.title || (p.toolCallId && toolNames[p.toolCallId]) || 'tool';
@@ -848,10 +1074,29 @@ export class CommandHistory {
       this.onCountChange(0);
       return;
     }
+    // Save open/closed state of all <details> elements before re-render
+    const detailsStates = new Map();
+    this.container.querySelectorAll('.ch-card').forEach(card => {
+      const id = card.dataset.recId;
+      if (!id) return;
+      const states = [];
+      card.querySelectorAll('details').forEach(d => states.push(d.open));
+      detailsStates.set(id, states);
+    });
+
     // v2.11.0: 最近 1 条 isRecent=true (默认展开 prompt 块)
     this.container.innerHTML = this._records
       .map((r, idx) => this._buildCard(r, idx === 0))
       .join('');
+
+    // Restore open/closed state
+    this.container.querySelectorAll('.ch-card').forEach(card => {
+      const id = card.dataset.recId;
+      const states = detailsStates.get(id);
+      if (!states) return;
+      const details = card.querySelectorAll('details');
+      details.forEach((d, i) => { if (i < states.length) d.open = states[i]; });
+    });
     this.onCountChange(this._records.length);
     // v2.14.2: artifact file download click handler
     this.container.querySelectorAll('.ch-artifact-fetch').forEach(link => {
@@ -919,6 +1164,17 @@ export class CommandHistory {
         }
       });
     });
+    // Toggle expand/collapse button handler
+    this.container.querySelectorAll('.ch-toggle-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const card = btn.closest('.ch-card');
+        if (!card) return;
+        const details = card.querySelectorAll('details');
+        const allOpen = [...details].every(d => d.open);
+        details.forEach(d => { d.open = !allOpen; });
+        btn.textContent = allOpen ? '▸' : '▾';
+      });
+    });
     // Elapsed timer
     this._updateElapsed();
   }
@@ -968,6 +1224,24 @@ export class CommandHistory {
     tick();
   }
 
+  _inferArtifactBadge(r) {
+    if (r._artifactName) return `<span class="ch-artifact-badge">${escapeHtml(r._artifactName)}</span>`;
+    const agents = r.agents || [];
+    const agentsStr = agents.join(',');
+    if (agentsStr.includes('kiro-stock')) return '<span class="ch-artifact-badge">📈 股票调研</span>';
+    if (agentsStr.includes('opengame')) return '<span class="ch-artifact-badge">🎮 做个游戏</span>';
+    if (r.mode === 'conversation') return '<span class="ch-artifact-badge">🧠 头脑风暴</span>';
+    return '';
+  }
+
+  _inferArtifactType(r) {
+    const agents = (r.agents || []).join(',');
+    if (r._artifactName?.includes('股票') || agents.includes('kiro-stock')) return 'stock';
+    if (r._artifactName?.includes('游戏') || agents.includes('opengame')) return 'game';
+    if (r._artifactName?.includes('头脑') || r.mode === 'conversation') return 'brain';
+    return '';
+  }
+
   _buildCard(r, isRecent = false) {
     const ts = new Date(r.submittedAt).toLocaleTimeString();
     const agentsStr = r.agents.join(', ');
@@ -1011,6 +1285,10 @@ export class CommandHistory {
     if (display.hasContent) {
       const turnsHtml = display.turns.map((t, i) => {
         const agentName = t.agent || '(unknown)';
+        // Separator before chained (auto-chain judge) steps
+        const prevTurn = i > 0 ? display.turns[i - 1] : null;
+        const isChainedStep = t._isChained && (!prevTurn || !prevTurn._isChained);
+        const chainSep = isChainedStep ? '<div class="ch-chain-sep">→ 汇总</div>' : '';
         // 子字段 chips: turn / duration / status / winner
         const chips = [];
         if (typeof t.turn === 'number') chips.push(`<span class="ch-turn-chip ch-turn-num">#${t.turn}</span>`);
@@ -1028,13 +1306,15 @@ export class CommandHistory {
           ? this._buildProgressHtml(t._progress, isRunning)
           : '';
         return `
+          ${chainSep}
           <div class="ch-turn">
             <div class="ch-turn-head">
               <span class="ch-turn-agent">${escapeHtml(agentName)}</span>
               ${chips.join('')}
             </div>
             ${progressHtml}
-            ${t._prompt_preview ? `<details class="ch-step-prompt"><summary>📝 Prompt (${t._prompt_preview.length} chars)</summary><pre class="ch-prompt-full">${escapeHtml(t._prompt_preview)}</pre></details>` : `<pre class="ch-turn-text">${escapeHtml(t.text)}</pre>`}
+            ${t._prompt_preview ? `<details class="ch-step-prompt"><summary>📝 Prompt (${t._prompt_preview.length} chars)</summary><pre class="ch-prompt-full">${escapeHtml(t._prompt_preview)}</pre></details>` : ''}
+            ${t.text ? `<hr class="ch-step-divider"><details class="ch-step-result"><summary>📋 Result (${t.text.length} chars)</summary><pre class="ch-turn-text">${escapeHtml(t.text)}</pre></details>` : (!t._prompt_preview ? `<pre class="ch-turn-text">⏳</pre>` : '')}
             ${artifactHtml}
           </div>
         `;
@@ -1046,7 +1326,7 @@ export class CommandHistory {
       if (meta.paused) metaChips.push(`<span class="ch-meta-chip ch-meta-paused">⏸ paused</span>`);
       const metaRow = metaChips.length > 0 ? `<div class="ch-meta-chips">${metaChips.join('')}</div>` : '';
       conversationBlock = `
-        <details class="ch-convo-block" open>
+        <details class="ch-convo-block">
           <summary>▾ Conversation (${display.turns.length} turn${display.turns.length === 1 ? '' : 's'})</summary>
           ${metaRow}
           <div class="ch-turns">${turnsHtml}</div>
@@ -1055,6 +1335,9 @@ export class CommandHistory {
     } else if (r.status === 'succeeded' || r.status === 'failed') {
       conversationBlock = `<div class="ch-meta ch-no-content">no readable output — see raw JSON below</div>`;
     }
+
+    // === Report download link (prefer CDN URL from artifact matching) ===
+    let reportBlock = '';
 
     // === Raw JSON (折叠) ===
     let rawBlock = '';
@@ -1067,20 +1350,25 @@ export class CommandHistory {
       rawBlock = `${truncatedNote}<details class="ch-raw-block"><summary>▸ Raw JSON (${json.length} bytes)</summary><pre>${escapeHtml(json.slice(0, 4000))}</pre></details>`;
     }
 
+    const typeClass = this._inferArtifactType(r);
+
     return `
-      <div class="ch-card ${statusClass}" data-rec-id="${escapeHtml(r.id)}">
+      <div class="ch-card ${statusClass} ${typeClass ? `ch-type-${typeClass}` : ''}" data-rec-id="${escapeHtml(r.id)}">
         <div class="ch-head">
           <span class="ch-mode">${escapeHtml(r.mode)}</span>
+          ${this._inferArtifactBadge(r)}
           <span class="ch-status">${escapeHtml(r.status)}</span>
           ${durationLine}
           ${(!TERMINAL_STATUSES.has(r.status) && r.submittedAt) ? `<span class="ch-elapsed" data-started="${r.submittedAt}"></span>` : ''}
           ${(!TERMINAL_STATUSES.has(r.status) && r.remoteId) ? `<button class="ch-cancel-btn" data-remote-id="${escapeHtml(r.remoteId)}" data-kind="${escapeHtml(r.kind)}">✕ Cancel</button>` : ''}
           ${(TERMINAL_STATUSES.has(r.status) && r.remoteId && r.kind === 'pipeline') ? `<button class="ch-rerun-btn" data-remote-id="${escapeHtml(r.remoteId)}">🔄 Rerun</button>` : ''}
+          <button class="ch-toggle-btn" title="展开/折叠">▸</button>
           <span class="ch-time">${ts}</span>
         </div>
         <div class="ch-agents">${escapeHtml(agentsStr)}</div>
         ${promptBlock}
         ${conversationBlock}
+        ${reportBlock}
         ${remoteIdLine}
         ${serverErrorLine}
         ${errorLine}

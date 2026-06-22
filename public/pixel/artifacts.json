@@ -24,13 +24,61 @@
     ]
   },
   {
+    "id": "stock-research",
+    "name": "📈 股票调研",
+    "description": "并行多角度调研 → 汇总报告",
+    "mode": "parallel",
+    "context": {
+      "next": {
+        "mode": "sequence",
+        "inject_upstream": "text",
+        "upload_report": true,
+        "steps": [
+          {
+            "agent": "kiro",
+            "prompt": "你是投资分析师。阅读以上三位分析师的并行调研结果，撰写一份结构化汇总报告：\n\n1. 核心结论（一句话）\n2. 基本面要点\n3. 技术面信号\n4. 市场情绪与风险\n5. 风险提示（明确列出主要风险因素：系统性风险、个股风险、流动性风险等）\n6. 综合建议\n\n要求：客观、有数据支撑、指出各分析师的分歧点。报告末尾必须附上免责声明：「本报告由 AI 自动生成，仅供参考，不构成任何投资建议。投资有风险，入市需谨慎。」\n\n完成后：\n1. 将报告保存为 report.md\n2. 执行 aws s3 cp report.md s3://opengame-demo-summit-2026/reports/{{uid}}.md --content-type 'text/markdown; charset=utf-8' --region us-east-1\n3. 报告访问地址: https://d1x0y8igxbg2j0.cloudfront.net/reports/{{uid}}.md",
+            "artifact": {"type": "url", "label": "📄 报告", "pattern": "https://d1x0y8igxbg2j0.cloudfront.net/reports/"}
+          }
+        ]
+      }
+    },
+    "steps": [
+      {
+        "agent": "kiro-stock",
+        "promptTemplate": "你是基本面分析师。本系统选股 API 仅覆盖 A 股与港股通，不支持美股等其他市场。\n\n对「{{input}}」进行基本面调研：财务数据、营收增长、利润率、估值水平（PE/PB/PS）、行业地位、护城河。给出明确的多空判断。\n\n要求：优先调用选股 API 获取真实数据。若标的不在 A 股/港股通覆盖范围内，第一句话明确说明「该标的超出系统覆盖范围」，不要用 web 搜索拼凑数据冒充真实行情。"
+      },
+      {
+        "agent": "kiro-stock",
+        "promptTemplate": "你是技术面分析师。本系统选股 API 仅覆盖 A 股与港股通，不支持美股等其他市场。\n\n对「{{input}}」进行技术分析：K线形态、均线系统、MACD/RSI/布林带、成交量变化、支撑阻力位、趋势判断。给出短中期方向预判。\n\n要求：技术分析必须基于真实行情数据，优先调用 /price、/diagnosis 等端点。若标的不在 A 股/港股通覆盖范围内，第一句话明确说明「该标的超出系统覆盖范围，无法提供技术面判断」，不要输出空框架。"
+      },
+      {
+        "agent": "kiro-stock",
+        "promptTemplate": "你是市场情绪分析师。本系统选股 API 仅覆盖 A 股与港股通，不支持美股等其他市场。\n\n对「{{input}}」进行情绪面调研：近期新闻舆情、机构持仓变化、资金流向、行业政策动态、市场热度。评估当前市场共识与潜在反转信号。\n\n要求：优先调用选股 API 获取真实数据。若标的不在 A 股/港股通覆盖范围内，第一句话明确说明「该标的超出系统覆盖范围」。"
+      }
+    ]
+  },
+  {
     "id": "brainstorm",
     "name": "🧠 头脑风暴",
     "description": "多 agent 对话讨论一个话题",
     "mode": "conversation",
-    "agents": ["kiro", "claude", "hermes"],
+    "agents": ["kiro", "claude", "hermes", "openclaw"],
     "minAgents": 2,
     "maxTurns": 6,
-    "promptTemplate": "{{input}}"
+    "promptTemplate": "{{input}}",
+    "context": {
+      "next": {
+        "mode": "sequence",
+        "inject_upstream": "text",
+        "upload_report": true,
+        "steps": [
+          {
+            "agent": "light-agent",
+            "prompt": "你是会议记录员。阅读以上多位 agent 的头脑风暴对话记录，撰写一份结构化总结：\n\n1. 核心议题\n2. 各方观点摘要（标注发言者）\n3. 共识与分歧\n4. 可执行的结论或下一步建议\n\n要求简洁清晰。\n\n完成后：\n1. 将总结保存为 summary.md\n2. 上传到 S3（注意 content-type 必须带 charset）:\n   aws s3 cp summary.md s3://opengame-demo-summit-2026/reports/{{uid}}.md --content-type 'text/markdown; charset=utf-8' --region us-east-1\n3. 报告访问地址: https://d1x0y8igxbg2j0.cloudfront.net/reports/{{uid}}.md",
+            "artifact": {"type": "url", "label": "📄 总结", "pattern": "https://d1x0y8igxbg2j0.cloudfront.net/reports/"}
+          }
+        ]
+      }
+    }
   }
 ]

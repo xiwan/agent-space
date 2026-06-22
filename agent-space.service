@@ -1,0 +1,15 @@
+[Unit]
+Description=Agent Space (Vite dev server)
+After=network.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/projects/agent-space
+EnvironmentFile=/home/ec2-user/projects/acp-bridge/.env
+ExecStart=/usr/bin/npm run dev
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

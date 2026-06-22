@@ -12,6 +12,17 @@ export function renderTemplate(template, input, uid) {
   return template.replace(/\{\{input\}\}/g, input).replace(/\{\{uid\}\}/g, uid);
 }
 
+function renderDeep(obj, input, uid) {
+  if (typeof obj === 'string') return renderTemplate(obj, input, uid);
+  if (Array.isArray(obj)) return obj.map(v => renderDeep(v, input, uid));
+  if (obj && typeof obj === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) out[k] = renderDeep(v, input, uid);
+    return out;
+  }
+  return obj;
+}
+
 /**
  * 从 artifact 定义 + 用户输入构造 API payload
  * @returns {{ endpoint: string, body: object }}
@@ -24,14 +35,29 @@ export function buildArtifactPayload(artifact, input, selectedAgents) {
     const agents = selectedAgents && selectedAgents.length >= 2
       ? selectedAgents
       : artifact.agents;
+    const body = {
+      mode: 'conversation',
+      participants: agents,
+      topic: renderTemplate(artifact.promptTemplate, input, uid),
+      config: { max_turns: artifact.maxTurns ?? 6 },
+    };
+    if (artifact.context) {
+      body.context = renderDeep(artifact.context, input, uid);
+    }
+    const _artifacts = [];
+    if (artifact.context?.next?.steps) {
+      for (const s of artifact.context.next.steps) {
+        if (!s.artifact) { _artifacts.push(null); continue; }
+        const a = { ...s.artifact };
+        if (a.pattern) a.pattern = renderTemplate(a.pattern, input, uid);
+        _artifacts.push(a);
+      }
+    }
     return {
       endpoint: '/api/pipelines',
-      body: {
-        mode: 'conversation',
-        participants: agents,
-        topic: renderTemplate(artifact.promptTemplate, input, uid),
-        config: { max_turns: artifact.maxTurns ?? 6 },
-      },
+      body,
+      _artifacts: _artifacts.length ? _artifacts : null,
+      _artifactName: artifact.name || '',
     };
   }
 
@@ -42,11 +68,7 @@ export function buildArtifactPayload(artifact, input, selectedAgents) {
   }));
   const body = { mode: artifact.mode, steps };
   if (artifact.context) {
-    const ctx = {};
-    for (const [k, v] of Object.entries(artifact.context)) {
-      ctx[k] = typeof v === 'string' ? renderTemplate(v, input, uid) : v;
-    }
-    body.context = ctx;
+    body.context = renderDeep(artifact.context, input, uid);
   }
   // Attach step artifact metadata for UI rendering (resolve {{uid}} in pattern)
   const _artifacts = (artifact.steps || []).map(s => {
@@ -55,7 +77,16 @@ export function buildArtifactPayload(artifact, input, selectedAgents) {
     if (a.pattern) a.pattern = renderTemplate(a.pattern, input, uid);
     return a;
   });
-  return { endpoint: '/api/pipelines', body, _artifacts };
+  // Append artifact defs from chained next steps
+  if (artifact.context?.next?.steps) {
+    for (const s of artifact.context.next.steps) {
+      if (!s.artifact) { _artifacts.push(null); continue; }
+      const a = { ...s.artifact };
+      if (a.pattern) a.pattern = renderTemplate(a.pattern, input, uid);
+      _artifacts.push(a);
+    }
+  }
+  return { endpoint: '/api/pipelines', body, _artifacts, _artifactName: artifact.name || '' };
 }
 
 export class ArtifactComposer {
@@ -176,10 +207,16 @@ export class ArtifactComposer {
       return;
     }
     this._stepsEl.style.display = '';
-    this._stepsEl.innerHTML = artifact.steps.map((s, i) => {
+    let html = artifact.steps.map((s, i) => {
       const arrow = i < artifact.steps.length - 1 ? ' →' : '';
       return `<span class="ac-step-chip">${s.agent}${arrow}</span>`;
     }).join(' ');
+    // Show auto-chain next steps hint
+    if (artifact.context?.next?.steps?.length) {
+      const nextAgents = artifact.context.next.steps.map(s => s.agent).join(', ');
+      html += ` <span class="ac-step-chip ac-step-next">→ ${nextAgents} (汇总)</span>`;
+    }
+    this._stepsEl.innerHTML = html;
   }
 
   _renderAgentChips() {

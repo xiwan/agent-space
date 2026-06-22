@@ -310,22 +310,20 @@ describe('CommandHistory v2.11.0 card structure', () => {
   });
 
   it('newest record (idx=0) has prompt-block open by default', () => {
-    history.pushSubmission(
-      { kind: 'run', mode: 'single', agents: ['a'], prompt: 'first prompt' },
-      { output: 'ok' }
-    );
+    // v2.23.0: _render now preserves open/closed <details> state across re-renders.
+    // A freshly-pushed newest record opens its prompt block by default.
     history.pushSubmission(
       { kind: 'run', mode: 'single', agents: ['b'], prompt: 'second prompt' },
       { output: 'ok' }
     );
     const cards = container.querySelectorAll('.ch-card');
-    // 最新在前 (cards[0] = second), 默认 open
+    // 最新一条默认 open
     expect(cards[0].querySelector('.ch-prompt-block').hasAttribute('open')).toBe(true);
-    // 第二张折叠
-    expect(cards[1].querySelector('.ch-prompt-block').hasAttribute('open')).toBe(false);
   });
 
-  it('conversation block always open when hasContent', () => {
+  it('conversation block present (collapsed by default) when hasContent', () => {
+    // v2.23.0: convo block no longer `open` by default — collapsed, toggle via ch-toggle-btn.
+    // Result text moved behind a <details class="ch-step-result"> block.
     history.pushSubmission(
       { kind: 'run', mode: 'single', agents: ['a'], prompt: 'p' },
       { output: 'agent reply text' }
@@ -333,7 +331,7 @@ describe('CommandHistory v2.11.0 card structure', () => {
     const card = container.querySelector('.ch-card');
     const convo = card.querySelector('.ch-convo-block');
     expect(convo).not.toBeNull();
-    expect(convo.hasAttribute('open')).toBe(true);
+    expect(convo.hasAttribute('open')).toBe(false);
     expect(convo.querySelector('.ch-turn-text').textContent).toBe('agent reply text');
     expect(convo.querySelector('.ch-turn-agent').textContent).toBe('a');
   });
@@ -577,13 +575,14 @@ describe('v2.13.0 persistence — pure helpers', () => {
   });
 
   it('truncateRecordForStorage: large output replaced with placeholder', () => {
-    const big = 'x'.repeat(20 * 1024);
+    // v2.23.0: default MAX_OUTPUT_BYTES raised 10KB → 50KB. Fixture must exceed it.
+    const big = 'x'.repeat(60 * 1024);
     const rec = { id: 'r1', output: { result: big } };
     const out = truncateRecordForStorage(rec);
     expect(out._truncated).toBe(true);
     expect(out.output._truncated).toBe(true);
-    expect(out.output._original_size).toBeGreaterThan(20000);
-    expect(out.output._max_bytes).toBe(10240);
+    expect(out.output._original_size).toBeGreaterThan(50000);
+    expect(out.output._max_bytes).toBe(50 * 1024);
     expect(out.output._preview).toMatch(/truncated for storage/);
   });
 
@@ -1190,15 +1189,17 @@ describe('v2.19.0 — SSE pipeline events', () => {
     expect(lastCall[1]).toMatch(/^💭 /);
   });
 
-  it('step_progress with message.part triggers bubble emit (deduped by parts_count)', () => {
+  it('step_progress with message.part triggers bubble emit (flushed on sentence boundary)', () => {
+    // v2.23.0: message.part bubbles are accumulated and flushed only on a
+    // sentence boundary or 60+ chars, with duration 3000.
     history.pushSubmission(
       { kind: 'pipeline', mode: 'sequence', agents: ['claude'], prompt: 'p' },
       { pipeline_id: 'p3' }
     );
     MockEventSource.last.emit('step_started', { index: 0, agent: 'claude' });
     onAgentOutput.mockClear();
-    MockEventSource.last.emit('step_progress', { index: 0, agent: 'claude', kind: 'message.part', content: 'partial output here' });
-    expect(onAgentOutput).toHaveBeenCalledWith('claude', expect.stringContaining('partial output'), expect.objectContaining({ duration: 2000 }));
+    MockEventSource.last.emit('step_progress', { index: 0, agent: 'claude', kind: 'message.part', content: 'partial output here.' });
+    expect(onAgentOutput).toHaveBeenCalledWith('claude', expect.stringContaining('partial output'), expect.objectContaining({ duration: 3000 }));
   });
 
   it('step_progress with tool.start emits 🔧 bubble', () => {

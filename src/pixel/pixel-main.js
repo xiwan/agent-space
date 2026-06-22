@@ -207,7 +207,7 @@ async function main() {
         const mode = payload.body?.mode || 'pipeline';
         const agents = payload.body?.participants || (payload.body?.steps || []).map(s => s.agent);
         const prompt = payload.body?.topic || (payload.body?.steps?.[0]?.prompt || '').slice(0, 80);
-        if (history) history.pushSubmission({ kind: 'pipeline', mode, agents, prompt, _artifacts: payload._artifacts }, response);
+        if (history) history.pushSubmission({ kind: 'pipeline', mode, agents, prompt, _artifacts: payload._artifacts, _artifactName: payload._artifactName || '' }, response);
       },
     });
 
