@@ -31,6 +31,12 @@ const POLL_INTERVAL_MS = 5000;
 const LIVE_POLL_INTERVAL_MS = 3000; // v2.14.1: 降频避免 429 (was 1500)
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'completed', 'failure', 'success', 'error']);
 
+// v2.24.0: 做游戏 resume 相关常量 (与 artifacts.json make-game 保持一致)
+const OPENGAME_CWD = '/tmp/opengame';
+const GAME_DEPLOY_BUCKET = 'opengame-demo-summit-2026';
+const GAME_DEPLOY_DISTRIBUTION = 'E3MU4MKLH39XO9';
+const GAME_DEPLOY_CDN = 'https://d1x0y8igxbg2j0.cloudfront.net';
+
 // v2.13.0: 持久化常量
 const STORAGE_KEY = 'pixel.commandHistory.v1';
 const STORAGE_VERSION = 1;
@@ -420,6 +426,7 @@ export class CommandHistory {
       error: null,
       _artifacts: ctx._artifacts || null, // per-step artifact metadata
       _artifactName: ctx._artifactName || '', // e.g. "🎮 做个游戏", "📈 股票调研"
+      gameId: ctx.gameId || '', // v2.24.0: opengame game ID, enables "继续改"
     };
     if (rec.kind === 'run') {
       rec.completedAt = rec.submittedAt;
@@ -664,6 +671,111 @@ export class CommandHistory {
   _closeSSE(pipelineId) {
     const es = this._sseMap.get(pipelineId);
     if (es) { es.close(); this._sseMap.delete(pipelineId); }
+  }
+
+  /**
+   * v2.24.0: 对已生成的游戏继续修改 (两段式).
+   *   1. 反查 opengame session (按 prompt 含 `<gameId>.html` 匹配)
+   *   2. submitRun → opengame (body session_id resume + X-ACP-Cwd header) 改代码
+   *   3. 完成后 submitPipeline → 单步 kiro 部署, 覆盖同一 gameId
+   * 整个修改作为一条新的 pipeline 历史记录展示.
+   *
+   * @param {object} srcRec — 被修改的原游戏 record (需含 gameId)
+   * @param {string} instruction — 用户的修改意见
+   * @returns {Promise<void>}
+   */
+  async reviseGame(srcRec, instruction) {
+    const gameId = srcRec?.gameId;
+    if (!gameId) throw new Error('reviseGame: source record has no gameId');
+    if (!instruction || !instruction.trim()) throw new Error('reviseGame: instruction required');
+    const instr = instruction.trim();
+
+    // 占位 record: 先建一条 running 的修改记录, 让用户立即看到反馈
+    const rec = {
+      id: genId(),
+      kind: 'pipeline',
+      mode: 'revise',
+      agents: ['opengame', 'kiro'],
+      prompt: `✏️ 改 ${gameId}: ${instr}`,
+      submittedAt: Date.now(),
+      completedAt: null,
+      status: 'running',
+      remoteId: null,
+      output: { steps: [] },
+      error: null,
+      _artifacts: [null, { type: 'url', label: 'URL', pattern: `${GAME_DEPLOY_CDN}/${gameId}/` }],
+      _artifactName: '🎮 做个游戏',
+      gameId,
+    };
+    this._records.unshift(rec);
+    if (this._records.length > MAX_RECORDS) this._records.length = MAX_RECORDS;
+    this._persist();
+    this._render();
+
+    try {
+      // ── Step 1: 反查 opengame session ──
+      rec.output.steps[0] = { agent: 'opengame', status: 'running', _progress: [] };
+      this._render();
+      let sessionId = '';
+      try {
+        const data = await this.client.listSessions('opengame', OPENGAME_CWD);
+        const items = (data?.items || [])
+          .filter(s => typeof s.prompt === 'string' && s.prompt.includes(`${gameId}.html`))
+          .sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+        if (items.length) sessionId = items[0].sessionId;
+      } catch { /* 反查失败 → 无 session, 仍可改 (新对话, 带 gameId 提示) */ }
+
+      // ── Step 2: submitRun → opengame 改代码 (resume) ──
+      const editPrompt = sessionId
+        ? `继续修改当前游戏 ${gameId}.html：${instr}\n\n直接在原文件基础上改，输出仍写入 ${gameId}.html。不要重写无关部分。`
+        : `读取当前目录下的 ${gameId}.html，按以下要求修改：${instr}\n\n直接改代码，输出仍写入 ${gameId}.html。`;
+      const runBody = {
+        agent_name: 'opengame',
+        input: [{ parts: [{ content: editPrompt, content_type: 'text/plain' }] }],
+      };
+      if (sessionId) runBody.session_id = sessionId;
+      const runResp = await this.client.submitRun({
+        body: runBody,
+        headers: { 'X-ACP-Cwd': OPENGAME_CWD },
+      });
+      const runText = (runResp?.output?.[0]?.parts || [])
+        .map(p => p.content).filter(Boolean).join('') || runResp?.result || '';
+      rec.output.steps[0] = {
+        agent: 'opengame', status: 'completed',
+        result: String(runText).slice(0, 2000),
+      };
+      this._persist();
+      this._render();
+      this.onAgentOutput('opengame', `✏️ 已修改 ${gameId}`, { duration: 3000 });
+
+      // ── Step 3: submitPipeline → kiro 部署 (覆盖同一 gameId) ──
+      const deployPrompt = `将当前目录下的 ${gameId}.html 部署到 S3 并刷新 CDN 缓存。游戏 ID：${gameId}。\n\n执行：\n1. aws s3 cp ${gameId}.html s3://${GAME_DEPLOY_BUCKET}/${gameId}/index.html --content-type text/html --region us-east-1\n2. aws cloudfront create-invalidation --distribution-id ${GAME_DEPLOY_DISTRIBUTION} --paths /${gameId}/*\n3. 报告访问地址 ${GAME_DEPLOY_CDN}/${gameId}/`;
+      const pipeResp = await this.client.submitPipeline({
+        body: {
+          mode: 'sequence',
+          steps: [{ agent: 'kiro', prompt: deployPrompt }],
+          context: { shared_cwd: OPENGAME_CWD },
+        },
+      });
+      const deployPid = pipeResp?.pipeline_id;
+      if (deployPid) {
+        // 部署步骤作为 step[1], 复用 SSE 把进度续接到本卡片
+        rec.remoteId = deployPid;
+        rec._nextStepBase = 1;
+        this._persist();
+        this._subscribeNextSSE(rec, deployPid);
+      } else {
+        rec.status = 'failed';
+        rec.error = 'deploy pipeline did not return pipeline_id';
+        this._persist();
+        this._render();
+      }
+    } catch (e) {
+      rec.status = 'failed';
+      rec.error = String(e?.message || e);
+      this._persist();
+      this._render();
+    }
   }
 
   /**
@@ -1175,6 +1287,25 @@ export class CommandHistory {
         btn.textContent = allOpen ? '▸' : '▾';
       });
     });
+    // v2.24.0: 继续改游戏 handler
+    this.container.querySelectorAll('.ch-revise-btn').forEach(btn => {
+      const trigger = () => {
+        const recId = btn.dataset.recId;
+        const srcRec = this._records.find(r => r.id === recId);
+        const box = btn.closest('.ch-revise');
+        const input = box && box.querySelector('.ch-revise-input');
+        const instruction = input ? input.value.trim() : '';
+        if (!srcRec || !instruction) return;
+        btn.disabled = true;
+        btn.textContent = '提交中…';
+        Promise.resolve(this.reviseGame(srcRec, instruction))
+          .catch(e => { console.error('reviseGame failed', e); })
+          .finally(() => { /* card re-renders; this btn is gone */ });
+      };
+      btn.addEventListener('click', trigger);
+      const input = btn.closest('.ch-revise')?.querySelector('.ch-revise-input');
+      if (input) input.addEventListener('keydown', (e) => { if (e.key === 'Enter') trigger(); });
+    });
     // Elapsed timer
     this._updateElapsed();
   }
@@ -1352,6 +1483,17 @@ export class CommandHistory {
 
     const typeClass = this._inferArtifactType(r);
 
+    // === v2.24.0: 继续改游戏 (game 类型 + 成功 + 有 gameId) ===
+    let reviseBlock = '';
+    if (typeClass === 'game' && r.gameId && (r.status === 'succeeded' || r.status === 'completed')) {
+      reviseBlock = `
+        <div class="ch-revise" data-game-id="${escapeHtml(r.gameId)}">
+          <input class="ch-revise-input" type="text" placeholder="✏️ 继续改这个游戏（如：加个计分板）" />
+          <button class="ch-revise-btn" data-rec-id="${escapeHtml(r.id)}">继续改</button>
+        </div>
+      `;
+    }
+
     return `
       <div class="ch-card ${statusClass} ${typeClass ? `ch-type-${typeClass}` : ''}" data-rec-id="${escapeHtml(r.id)}">
         <div class="ch-head">
@@ -1369,6 +1511,7 @@ export class CommandHistory {
         ${promptBlock}
         ${conversationBlock}
         ${reportBlock}
+        ${reviseBlock}
         ${remoteIdLine}
         ${serverErrorLine}
         ${errorLine}

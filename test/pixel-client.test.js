@@ -53,6 +53,28 @@ describe('CommandClient', () => {
     expect(fetchImpl).toHaveBeenCalledWith('/api/pipelines', expect.any(Object));
   });
 
+  it('v2.24.0: submitRun passes through custom headers (X-ACP-Cwd)', async () => {
+    const fetchImpl = mkOk({ session_id: 's1' });
+    const c = new CommandClient({ fetchImpl });
+    await c.submitRun({ body: { agent_name: 'opengame', input: [] }, headers: { 'X-ACP-Cwd': '/tmp/opengame' } });
+    const init = fetchImpl.mock.calls[0][1];
+    expect(init.headers['X-ACP-Cwd']).toBe('/tmp/opengame');
+    expect(init.headers['content-type']).toBe('application/json');
+  });
+
+  it('v2.24.0: listSessions GETs /api/agents/{agent}/sessions?cwd=', async () => {
+    const fetchImpl = mkOk({ items: [{ sessionId: 's1' }] });
+    const c = new CommandClient({ fetchImpl });
+    const res = await c.listSessions('opengame', '/tmp/opengame');
+    expect(fetchImpl.mock.calls[0][0]).toBe('/api/agents/opengame/sessions?cwd=%2Ftmp%2Fopengame');
+    expect(res.items[0].sessionId).toBe('s1');
+  });
+
+  it('v2.24.0: listSessions requires agent', async () => {
+    const c = new CommandClient({ fetchImpl: mkOk({}) });
+    await expect(c.listSessions()).rejects.toThrow(/agent required/);
+  });
+
   it('submit() routes by endpoint', async () => {
     const fetchImpl = mkOk({});
     const c = new CommandClient({ fetchImpl });

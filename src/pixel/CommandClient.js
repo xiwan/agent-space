@@ -32,15 +32,15 @@ export class CommandClient {
   }
 
   async submitRun(payload) {
-    return this._post('/api/runs', payload.body);
+    return this._post('/api/runs', payload.body, payload.headers);
   }
 
   async submitJob(payload) {
-    return this._post('/api/jobs', payload.body);
+    return this._post('/api/jobs', payload.body, payload.headers);
   }
 
   async submitPipeline(payload) {
-    return this._post('/api/pipelines', payload.body);
+    return this._post('/api/pipelines', payload.body, payload.headers);
   }
 
   /**
@@ -63,6 +63,17 @@ export class CommandClient {
   async pollPipeline(pipelineId) {
     if (!pipelineId) throw new Error('pollPipeline: pipelineId required');
     return this._get(`/api/pipelines/${encodeURIComponent(pipelineId)}`);
+  }
+
+  /**
+   * v2.24.0: 列出某 agent 在指定 cwd 下的历史 session.
+   * 返回: { items: [{ sessionId, cwd, prompt, mtime, messageCount, ... }] }
+   * 用于 resume — 例如反查 opengame 某游戏的 session.
+   */
+  async listSessions(agent, cwd) {
+    if (!agent) throw new Error('listSessions: agent required');
+    const q = cwd ? `?cwd=${encodeURIComponent(cwd)}` : '';
+    return this._get(`/api/agents/${encodeURIComponent(agent)}/sessions${q}`);
   }
 
   /**
@@ -105,12 +116,12 @@ export class CommandClient {
 
   // ===== private =====
 
-  async _post(url, body) {
+  async _post(url, body, extraHeaders) {
     let r;
     try {
       r = await this._fetch(url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...(extraHeaders || {}) },
         body: JSON.stringify(body),
       });
     } catch (e) {

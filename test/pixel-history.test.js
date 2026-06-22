@@ -11,6 +11,10 @@ function mkClient(over = {}) {
     pollPipelineStepLive: over.pollPipelineStepLive || vi.fn().mockResolvedValue({ content: '', parts_count: 0 }),
     cancelPipeline: over.cancelPipeline || vi.fn().mockResolvedValue({ status: 'cancelled' }),
     cancelJob: over.cancelJob || vi.fn().mockResolvedValue({ status: 'cancelled' }),
+    // v2.24.0: reviseGame deps
+    submitRun: over.submitRun || vi.fn().mockResolvedValue({ session_id: 's1', output: [{ parts: [{ content: 'done' }] }] }),
+    submitPipeline: over.submitPipeline || vi.fn().mockResolvedValue({ pipeline_id: 'deploy-pid' }),
+    listSessions: over.listSessions || vi.fn().mockResolvedValue({ items: [] }),
   };
 }
 
@@ -1346,5 +1350,112 @@ describe('v2.19.0 — Cancel button graceful 404 degrade', () => {
     await new Promise(r => setTimeout(r, 0));
     await new Promise(r => setTimeout(r, 0));
     expect(btn.textContent).toBe('✕ Error');
+  });
+});
+
+describe('v2.24.0 — 继续改游戏 (reviseGame + UI)', () => {
+  let container, history;
+  beforeEach(() => {
+    if (typeof localStorage !== 'undefined') localStorage.clear();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+  afterEach(() => { if (history) history.stop?.(); document.body.innerHTML = ''; });
+
+  function pushGameRecord(h) {
+    // 模拟一条成功的"做游戏" pipeline 记录
+    h.pushSubmission(
+      { kind: 'pipeline', mode: 'sequence', agents: ['harness', 'opengame', 'kiro'], prompt: 'make game', _artifactName: '🎮 做个游戏', gameId: 'abc12345' },
+      { pipeline_id: 'p-game' }
+    );
+    const rec = h.list()[0];
+    rec.status = 'succeeded';
+    rec.output = { steps: [{ agent: 'opengame', result: 'built' }] };
+    h._render();
+    return rec;
+  }
+
+  it('game 卡片 (succeeded + gameId) 渲染 继续改 输入框', () => {
+    history = new CommandHistory(container, { client: mkClient(), pollIntervalMs: 1e9 });
+    pushGameRecord(history);
+    expect(container.querySelector('.ch-revise')).not.toBeNull();
+    expect(container.querySelector('.ch-revise-input')).not.toBeNull();
+    expect(container.querySelector('.ch-revise-btn')).not.toBeNull();
+  });
+
+  it('非 game 类型 / pending 不显示 继续改', () => {
+    history = new CommandHistory(container, { client: mkClient(), pollIntervalMs: 1e9 });
+    history.pushSubmission({ kind: 'pipeline', mode: 'sequence', agents: ['kiro'], prompt: 'x' }, { pipeline_id: 'p2' });
+    history._render();
+    expect(container.querySelector('.ch-revise')).toBeNull();
+  });
+
+  it('reviseGame: 反查 session → resume run → deploy pipeline', async () => {
+    const listSessions = vi.fn().mockResolvedValue({
+      items: [
+        { sessionId: 'sess-old', prompt: '输出文件：other.html', mtime: 100 },
+        { sessionId: 'sess-game', prompt: '输出文件：abc12345.html', mtime: 200 },
+      ],
+    });
+    const submitRun = vi.fn().mockResolvedValue({ session_id: 'sess-game', output: [{ parts: [{ content: 'modified' }] }] });
+    const submitPipeline = vi.fn().mockResolvedValue({ pipeline_id: 'deploy-1' });
+    const client = mkClient({ listSessions, submitRun, submitPipeline });
+    history = new CommandHistory(container, { client, pollIntervalMs: 1e9 });
+    const src = pushGameRecord(history);
+
+    await history.reviseGame(src, '加个计分板');
+
+    // 反查用了正确 agent + cwd
+    expect(listSessions).toHaveBeenCalledWith('opengame', '/tmp/opengame');
+    // run 带正确 session_id + cwd header
+    expect(submitRun).toHaveBeenCalledTimes(1);
+    const runArg = submitRun.mock.calls[0][0];
+    expect(runArg.body.session_id).toBe('sess-game');
+    expect(runArg.body.agent_name).toBe('opengame');
+    expect(runArg.headers['X-ACP-Cwd']).toBe('/tmp/opengame');
+    expect(runArg.body.input[0].parts[0].content).toContain('加个计分板');
+    expect(runArg.body.input[0].parts[0].content).toContain('abc12345.html');
+    // 部署 pipeline 覆盖同 gameId
+    expect(submitPipeline).toHaveBeenCalledTimes(1);
+    const pipeArg = submitPipeline.mock.calls[0][0];
+    expect(pipeArg.body.steps[0].agent).toBe('kiro');
+    expect(pipeArg.body.steps[0].prompt).toContain('abc12345');
+    expect(pipeArg.body.context.shared_cwd).toBe('/tmp/opengame');
+    // 新建了一条修改记录
+    const revRec = history.list()[0];
+    expect(revRec.mode).toBe('revise');
+    expect(revRec.gameId).toBe('abc12345');
+    expect(revRec.remoteId).toBe('deploy-1');
+  });
+
+  it('reviseGame: session 反查无匹配 → 仍提交 run (无 session_id, 走文件读取)', async () => {
+    const listSessions = vi.fn().mockResolvedValue({ items: [{ sessionId: 'x', prompt: 'unrelated', mtime: 1 }] });
+    const submitRun = vi.fn().mockResolvedValue({ session_id: 'new', output: [] });
+    const client = mkClient({ listSessions, submitRun });
+    history = new CommandHistory(container, { client, pollIntervalMs: 1e9 });
+    const src = pushGameRecord(history);
+    await history.reviseGame(src, '改颜色');
+    const runArg = submitRun.mock.calls[0][0];
+    expect(runArg.body.session_id).toBeUndefined();
+    expect(runArg.body.input[0].parts[0].content).toContain('读取当前目录下的 abc12345.html');
+  });
+
+  it('reviseGame: run 失败 → 记录 failed, 不调用部署', async () => {
+    const submitRun = vi.fn().mockRejectedValue(new Error('opengame down'));
+    const submitPipeline = vi.fn();
+    const client = mkClient({ submitRun, submitPipeline });
+    history = new CommandHistory(container, { client, pollIntervalMs: 1e9 });
+    const src = pushGameRecord(history);
+    await history.reviseGame(src, 'x');
+    expect(submitPipeline).not.toHaveBeenCalled();
+    const revRec = history.list()[0];
+    expect(revRec.status).toBe('failed');
+    expect(revRec.error).toMatch(/opengame down/);
+  });
+
+  it('reviseGame: 无 gameId 抛错', async () => {
+    history = new CommandHistory(container, { client: mkClient(), pollIntervalMs: 1e9 });
+    const rec = { id: 'x', gameId: '' };
+    await expect(history.reviseGame(rec, 'x')).rejects.toThrow(/gameId/);
   });
 });

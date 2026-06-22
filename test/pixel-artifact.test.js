@@ -53,6 +53,13 @@ describe('buildArtifactPayload', () => {
     expect(p.body.steps[1].prompt).toBe('Step2: snake game');
   });
 
+  it('v2.24.0: returns _uid (8-hex game id) for sequence + conversation', () => {
+    const seq = buildArtifactPayload(sequenceArtifact, 'snake game');
+    expect(seq._uid).toMatch(/^[0-9a-f]{8}$/);
+    const conv = buildArtifactPayload(conversationArtifact, 'AI future');
+    expect(conv._uid).toMatch(/^[0-9a-f]{8}$/);
+  });
+
   it('builds conversation payload with default agents', () => {
     const p = buildArtifactPayload(conversationArtifact, 'AI future');
     expect(p.endpoint).toBe('/api/pipelines');

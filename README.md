@@ -13,6 +13,7 @@ Agents walk to their desk when busy, wander around the office when idle. Click a
 - A* pathfinding around obstacles
 - Intermittent chat bubbles + busy emoji indicators
 - Command Composer: invoke ACP Bridge runs/jobs/pipelines from the UI (Quick presets + Advanced raw form, both inside the sidebar Compose tab)
+- Iterative game editing: the 🎮 "做个游戏" preset's history card offers a "继续改" box that resumes the OpenGame session (via `X-ACP-Cwd` + reverse-looked-up session) to modify the generated game and redeploy to the same game ID
 - Sidebar: Agents / History / Usage / Heartbeat / ⚡ Compose tabs
 - Heartbeat tab: live agent chatter feed with interval control + countdown bar
 - Heartbeat Intervene: inject talking-points into all agents (ttl-bounded), or ping a single agent immediately

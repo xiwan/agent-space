@@ -58,6 +58,7 @@ export function buildArtifactPayload(artifact, input, selectedAgents) {
       body,
       _artifacts: _artifacts.length ? _artifacts : null,
       _artifactName: artifact.name || '',
+      _uid: uid,
     };
   }
 
@@ -86,7 +87,7 @@ export function buildArtifactPayload(artifact, input, selectedAgents) {
       _artifacts.push(a);
     }
   }
-  return { endpoint: '/api/pipelines', body, _artifacts, _artifactName: artifact.name || '' };
+  return { endpoint: '/api/pipelines', body, _artifacts, _artifactName: artifact.name || '', _uid: uid };
 }
 
 export class ArtifactComposer {
