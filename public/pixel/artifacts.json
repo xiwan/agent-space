@@ -13,7 +13,7 @@
       },
       {
         "agent": "opengame",
-        "promptTemplate": "读取当前目录下的 gdd.md，按其中描述实现游戏。\n\n输出文件：{{uid}}.html\n技术约束：单 HTML 文件，纯 vanilla JS 加 Canvas，不使用任何外部库，浏览器直接打开即可玩。\n\n直接开始写代码，不要再做需求分析或方案讨论。",
+        "promptTemplate": "读取当前目录下的 gdd.md，按其中描述实现游戏。\n\n输出文件：{{uid}}.html\n技术约束：单 HTML 文件，纯 vanilla JS 加 Canvas，不使用任何外部库，浏览器直接打开即可玩。\n\n执行要求：\n- 不要过度思考。gdd.md 已经是定稿，直接照着实现，不要重新评估设计、不要列方案对比、不要反复权衡技术选型。\n- 跳过需求分析和方案讨论，第一步就开始写 {{uid}}.html。\n- 一次成型：按 gdd 写出完整可玩版本即可，不要为边缘情况反复打磨或自我推翻重写。\n- 最小可玩实现（MVP）优先，先保证能跑、能玩、无报错。",
         "artifact": {"type": "file", "label": "游戏文件", "pattern": "{{uid}}.html"}
       },
       {
