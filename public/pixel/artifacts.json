@@ -62,7 +62,7 @@
     "name": "🧠 头脑风暴",
     "description": "多 agent 对话讨论一个话题",
     "mode": "conversation",
-    "agents": ["kiro", "claude", "hermes", "openclaw"],
+    "agents": ["kiro", "claude", "hermes", "codex"],
     "minAgents": 2,
     "maxTurns": 6,
     "promptTemplate": "{{input}}",
