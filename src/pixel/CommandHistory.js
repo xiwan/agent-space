@@ -1191,6 +1191,26 @@ export class CommandHistory {
   }
 
   /**
+   * v2.24.2: 折叠状态也能看到的顶层产出条.
+   * 扫描所有 turn, 复用 _buildArtifactLink 收集已就绪的 artifact 链接 (URL/文件下载),
+   * 去重后渲染. 放在折叠的 conversation block 之外, 始终可见.
+   * @param {object} r — record
+   * @param {{turns:Array}} display — extractDisplayText 结果
+   * @returns {string} HTML (空串 = 无产出)
+   */
+  _buildTopArtifacts(r, display) {
+    if (!r._artifacts || !display || !Array.isArray(display.turns)) return '';
+    const links = [];
+    const seen = new Set();
+    display.turns.forEach((t, i) => {
+      const html = this._buildArtifactLink(r, i, t);
+      if (html && !seen.has(html)) { seen.add(html); links.push(html); }
+    });
+    if (!links.length) return '';
+    return `<div class="ch-top-artifacts">📎 产出：${links.join('')}</div>`;
+  }
+
+  /**
    * v2.15: Render step_progress entries as a compact activity log.
    */
   _buildProgressHtml(progress, isOpen) {
@@ -1512,7 +1532,8 @@ export class CommandHistory {
     }
 
     // === Report download link (prefer CDN URL from artifact matching) ===
-    let reportBlock = '';
+    // v2.24.2: 顶层产出条 — 折叠时也可见
+    let reportBlock = this._buildTopArtifacts(r, display);
 
     // === Raw JSON (折叠) ===
     let rawBlock = '';

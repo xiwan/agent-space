@@ -771,6 +771,16 @@
     .ch-report { margin: 6px 0; }
     .ch-report a { color: #38bdf8; font-size: 12px; text-decoration: none; }
     .ch-report a:hover { text-decoration: underline; }
+    /* v2.24.2: 折叠时也可见的顶层产出条 */
+    .ch-top-artifacts {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      margin: 6px 0; padding: 6px 8px;
+      background: #0f1b2e; border: 1px solid #1e3a5f; border-radius: 4px;
+      font-size: 11px; color: #94a3b8;
+    }
+    .ch-top-artifacts .ch-artifact { margin: 0; }
+    .ch-top-artifacts a { color: #38bdf8; text-decoration: none; }
+    .ch-top-artifacts a:hover { text-decoration: underline; }
     /* v2.24.0: 继续改游戏 */
     .ch-revise { display: flex; gap: 6px; margin: 8px 0 4px; }
     .ch-revise-input {

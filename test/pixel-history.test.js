@@ -1478,3 +1478,60 @@ describe('v2.24.0 — 继续改游戏 (reviseGame + UI)', () => {
     await expect(history.reviseGame(rec, 'x')).rejects.toThrow(/gameId/);
   });
 });
+
+describe('v2.24.2 — 折叠状态展示顶层产出', () => {
+  let container, history;
+  beforeEach(() => {
+    if (typeof localStorage !== 'undefined') localStorage.clear();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    history = new CommandHistory(container, { client: mkClient(), pollIntervalMs: 1e9 });
+  });
+  afterEach(() => { document.body.innerHTML = ''; });
+
+  it('URL 产出: 折叠的 convo block 之外有顶层产出条 + 链接', () => {
+    history.pushSubmission(
+      { kind: 'pipeline', mode: 'sequence', agents: ['kiro'], prompt: 'deploy',
+        _artifacts: [{ type: 'url', label: 'URL', pattern: 'https://cdn.example.com' }] },
+      { pipeline_id: 'p1' }
+    );
+    const rec = history.list()[0];
+    rec.status = 'succeeded';
+    rec.output = { steps: [{ agent: 'kiro', status: 'completed', result: '部署完成 https://cdn.example.com/game1/' }] };
+    history._render();
+
+    const top = container.querySelector('.ch-top-artifacts');
+    expect(top).not.toBeNull();
+    const link = top.querySelector('a');
+    expect(link).not.toBeNull();
+    expect(link.getAttribute('href')).toBe('https://cdn.example.com/game1/');
+    // 顶层产出条必须在折叠的 convo block 之外 (不是它的后代)
+    const convo = container.querySelector('.ch-convo-block');
+    expect(convo.contains(top)).toBe(false);
+  });
+
+  it('无 artifact 定义 → 不显示顶层产出条', () => {
+    history.pushSubmission(
+      { kind: 'pipeline', mode: 'sequence', agents: ['kiro'], prompt: 'x' },
+      { pipeline_id: 'p2' }
+    );
+    const rec = history.list()[0];
+    rec.status = 'succeeded';
+    rec.output = { steps: [{ agent: 'kiro', status: 'completed', result: 'done' }] };
+    history._render();
+    expect(container.querySelector('.ch-top-artifacts')).toBeNull();
+  });
+
+  it('URL 未在结果中出现 → 不显示 (避免空链接)', () => {
+    history.pushSubmission(
+      { kind: 'pipeline', mode: 'sequence', agents: ['kiro'], prompt: 'x',
+        _artifacts: [{ type: 'url', label: 'URL', pattern: 'https://cdn.example.com' }] },
+      { pipeline_id: 'p3' }
+    );
+    const rec = history.list()[0];
+    rec.status = 'succeeded';
+    rec.output = { steps: [{ agent: 'kiro', status: 'completed', result: '部署中没有给出链接' }] };
+    history._render();
+    expect(container.querySelector('.ch-top-artifacts')).toBeNull();
+  });
+});
