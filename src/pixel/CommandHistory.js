@@ -389,6 +389,7 @@ export class CommandHistory {
                   : (typeof localStorage !== 'undefined' ? localStorage : null);
     this._records = []; // 最新在前
     this._timer = null;
+    this._expandedCardId = null; // v2.24.3: accordion — 当前展开的卡片 id
     this._seenOutputs = new Set(); // dedup: `${recId}:${stepIdx}`
     // v2.14.2: SSE subscriptions (pipeline_id → EventSource)
     this._sseMap = new Map();
@@ -1347,8 +1348,12 @@ export class CommandHistory {
         if (!card) return;
         const details = card.querySelectorAll('details');
         const allOpen = [...details].every(d => d.open);
-        details.forEach(d => { d.open = !allOpen; });
-        btn.textContent = allOpen ? '▸' : '▾';
+        const willOpen = !allOpen;
+        details.forEach(d => { d.open = willOpen; });
+        btn.textContent = willOpen ? '▾' : '▸';
+        // v2.24.3: accordion — 展开一张卡片时隐藏其他, 折叠时全部恢复
+        this._expandedCardId = willOpen ? (card.dataset.recId || null) : null;
+        this._applyAccordion();
       });
     });
     // v2.24.0: 继续改游戏 handler
@@ -1372,10 +1377,32 @@ export class CommandHistory {
     });
     // Elapsed timer
     this._updateElapsed();
+    // v2.24.3: 重新应用 accordion 状态 (re-render 后保持)
+    this._applyAccordion();
   }
 
-  _findByRemoteId(remoteId) {
-    return this._records.find(r => r.remoteId === remoteId) || null;
+  /**
+   * v2.24.3: accordion 显隐.
+   * _expandedCardId 非空时, 容器加 .ch-accordion-active, 该卡加 .ch-card-expanded,
+   * 其余卡片由 CSS 隐藏. 若展开的卡片已不存在 (被 FIFO 淘汰), 清空状态.
+   */
+  _applyAccordion() {
+    const expandedId = this._expandedCardId;
+    if (expandedId && !this._records.some(r => r.id === expandedId)) {
+      this._expandedCardId = null;
+    }
+    const active = !!this._expandedCardId;
+    this.container.classList.toggle('ch-accordion-active', active);
+    this.container.querySelectorAll('.ch-card').forEach(card => {
+      const isExpanded = active && card.dataset.recId === this._expandedCardId;
+      card.classList.toggle('ch-card-expanded', isExpanded);
+      // 同步该卡 details 展开状态 + toggle 按钮图标
+      if (isExpanded) {
+        card.querySelectorAll('details').forEach(d => { d.open = true; });
+        const tb = card.querySelector('.ch-toggle-btn');
+        if (tb) tb.textContent = '▾';
+      }
+    });
   }
 
   _addRerunRecord(res, originalRec) {

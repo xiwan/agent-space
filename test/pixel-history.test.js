@@ -1535,3 +1535,58 @@ describe('v2.24.2 — 折叠状态展示顶层产出', () => {
     expect(container.querySelector('.ch-top-artifacts')).toBeNull();
   });
 });
+
+describe('v2.24.3 — accordion 展开/折叠', () => {
+  let container, history;
+  beforeEach(() => {
+    if (typeof localStorage !== 'undefined') localStorage.clear();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    history = new CommandHistory(container, { client: mkClient(), pollIntervalMs: 1e9 });
+    // 两条记录
+    history.pushSubmission({ kind: 'run', mode: 'single', agents: ['a'], prompt: 'first' }, { output: 'ok1' });
+    history.pushSubmission({ kind: 'run', mode: 'single', agents: ['b'], prompt: 'second' }, { output: 'ok2' });
+  });
+  afterEach(() => { document.body.innerHTML = ''; });
+
+  it('展开一张卡片 → 容器 active + 仅该卡 expanded, 其他被隐藏', () => {
+    const cards = container.querySelectorAll('.ch-card');
+    expect(cards.length).toBe(2);
+    // 点第二张 (cards[1]) 的 toggle 按钮展开
+    const toggle = cards[1].querySelector('.ch-toggle-btn');
+    toggle.click();
+    expect(container.classList.contains('ch-accordion-active')).toBe(true);
+    expect(cards[1].classList.contains('ch-card-expanded')).toBe(true);
+    expect(cards[0].classList.contains('ch-card-expanded')).toBe(false);
+    expect(history._expandedCardId).toBe(cards[1].dataset.recId);
+  });
+
+  it('再次点击同卡 toggle → 折叠, 容器恢复, 全部展示', () => {
+    const cards = container.querySelectorAll('.ch-card');
+    const toggle = cards[0].querySelector('.ch-toggle-btn');
+    toggle.click(); // 展开
+    expect(container.classList.contains('ch-accordion-active')).toBe(true);
+    toggle.click(); // 折叠
+    expect(container.classList.contains('ch-accordion-active')).toBe(false);
+    expect(history._expandedCardId).toBeNull();
+    expect(cards[0].classList.contains('ch-card-expanded')).toBe(false);
+  });
+
+  it('accordion 状态在 re-render 后保持', () => {
+    const cards = container.querySelectorAll('.ch-card');
+    const expandId = cards[0].dataset.recId;
+    cards[0].querySelector('.ch-toggle-btn').click();
+    history._render();
+    expect(container.classList.contains('ch-accordion-active')).toBe(true);
+    const expandedCard = container.querySelector(`.ch-card[data-rec-id="${expandId}"]`);
+    expect(expandedCard.classList.contains('ch-card-expanded')).toBe(true);
+  });
+
+  it('展开的卡片被 FIFO 淘汰 → 状态自动清空', () => {
+    const cards = container.querySelectorAll('.ch-card');
+    history._expandedCardId = 'nonexistent-id';
+    history._render();
+    expect(history._expandedCardId).toBeNull();
+    expect(container.classList.contains('ch-accordion-active')).toBe(false);
+  });
+});
