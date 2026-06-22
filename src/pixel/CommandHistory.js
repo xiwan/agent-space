@@ -725,24 +725,41 @@ export class CommandHistory {
         if (items.length) sessionId = items[0].sessionId;
       } catch { /* 反查失败 → 无 session, 仍可改 (新对话, 带 gameId 提示) */ }
 
-      // ── Step 2: submitRun → opengame 改代码 (resume) ──
+      // ── Step 2: submitJob → opengame 改代码 (异步, 避免长任务被网关 504) ──
       const editPrompt = sessionId
         ? `继续修改当前游戏 ${gameId}.html：${instr}\n\n直接在原文件基础上改，输出仍写入 ${gameId}.html。不要重写无关部分。`
         : `读取当前目录下的 ${gameId}.html，按以下要求修改：${instr}\n\n直接改代码，输出仍写入 ${gameId}.html。`;
-      const runBody = {
+      const jobBody = {
         agent_name: 'opengame',
-        input: [{ parts: [{ content: editPrompt, content_type: 'text/plain' }] }],
+        prompt: editPrompt,
+        cwd: OPENGAME_CWD,
       };
-      if (sessionId) runBody.session_id = sessionId;
-      const runResp = await this.client.submitRun({
-        body: runBody,
-        headers: { 'X-ACP-Cwd': OPENGAME_CWD },
-      });
-      const runText = (runResp?.output?.[0]?.parts || [])
-        .map(p => p.content).filter(Boolean).join('') || runResp?.result || '';
+      if (sessionId) jobBody.session_id = sessionId;
+      const jobResp = await this.client.submitJob({ body: jobBody });
+      const jobId = jobResp?.job_id;
+      if (!jobId) throw new Error('opengame job did not return job_id');
+      rec.output.steps[0] = { agent: 'opengame', status: 'running', remoteJobId: jobId, _progress: [] };
+      this._persist();
+      this._render();
+
+      const jobData = await this._pollJobUntilDone(jobId);
+      const jobStatus = normalizeStatus(jobData?.status);
+      if (jobStatus === 'failed') {
+        rec.output.steps[0] = {
+          agent: 'opengame', status: 'failed',
+          error: jobData?.error || 'opengame job failed',
+        };
+        rec.status = 'failed';
+        rec.error = `opengame 改代码失败: ${jobData?.error || 'unknown'}`;
+        this._persist();
+        this._render();
+        return;
+      }
+      const jobText = jobData?.result || '';
       rec.output.steps[0] = {
         agent: 'opengame', status: 'completed',
-        result: String(runText).slice(0, 2000),
+        result: String(jobText).slice(0, 2000),
+        duration: jobData?.duration,
       };
       this._persist();
       this._render();
@@ -776,6 +793,33 @@ export class CommandHistory {
       this._persist();
       this._render();
     }
+  }
+
+  /**
+   * v2.24.1: 轮询 /jobs/{id} 直到 terminal 状态. 用于 reviseGame 的异步 opengame 步骤.
+   * @param {string} jobId
+   * @param {object} [opts]
+   * @param {number} [opts.intervalMs] 轮询间隔, 默认 LIVE_POLL_INTERVAL_MS(3s)
+   * @param {number} [opts.maxAttempts] 上限, 默认 200 (~10 分钟)
+   * @returns {Promise<object>} 最终 job 数据 (含 status/result/error)
+   */
+  async _pollJobUntilDone(jobId, opts = {}) {
+    const interval = opts.intervalMs ?? LIVE_POLL_INTERVAL_MS;
+    const maxAttempts = opts.maxAttempts ?? 200;
+    let last = null;
+    for (let i = 0; i < maxAttempts; i++) {
+      try {
+        last = await this.client.pollJob(jobId);
+        const st = normalizeStatus(last?.status);
+        if (st === 'succeeded' || st === 'failed') return last;
+      } catch (e) {
+        // 临时网络错忽略, 继续轮询
+        last = last || { status: 'running', error: String(e?.message || e) };
+      }
+      await new Promise(r => setTimeout(r, interval));
+    }
+    // 超时未完成 → 当作 failed 处理
+    return { ...(last || {}), status: 'failed', error: (last && last.error) || 'opengame job timed out' };
   }
 
   /**

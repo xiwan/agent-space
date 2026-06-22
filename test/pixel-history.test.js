@@ -13,6 +13,7 @@ function mkClient(over = {}) {
     cancelJob: over.cancelJob || vi.fn().mockResolvedValue({ status: 'cancelled' }),
     // v2.24.0: reviseGame deps
     submitRun: over.submitRun || vi.fn().mockResolvedValue({ session_id: 's1', output: [{ parts: [{ content: 'done' }] }] }),
+    submitJob: over.submitJob || vi.fn().mockResolvedValue({ job_id: 'job-x' }),
     submitPipeline: over.submitPipeline || vi.fn().mockResolvedValue({ pipeline_id: 'deploy-pid' }),
     listSessions: over.listSessions || vi.fn().mockResolvedValue({ items: [] }),
   };
@@ -1390,16 +1391,17 @@ describe('v2.24.0 — 继续改游戏 (reviseGame + UI)', () => {
     expect(container.querySelector('.ch-revise')).toBeNull();
   });
 
-  it('reviseGame: 反查 session → resume run → deploy pipeline', async () => {
+  it('reviseGame: 反查 session → async job (resume+cwd) → deploy pipeline', async () => {
     const listSessions = vi.fn().mockResolvedValue({
       items: [
         { sessionId: 'sess-old', prompt: '输出文件：other.html', mtime: 100 },
         { sessionId: 'sess-game', prompt: '输出文件：abc12345.html', mtime: 200 },
       ],
     });
-    const submitRun = vi.fn().mockResolvedValue({ session_id: 'sess-game', output: [{ parts: [{ content: 'modified' }] }] });
+    const submitJob = vi.fn().mockResolvedValue({ job_id: 'job-1', session_id: 'sess-game' });
+    const pollJob = vi.fn().mockResolvedValue({ status: 'completed', result: 'modified', duration: 12 });
     const submitPipeline = vi.fn().mockResolvedValue({ pipeline_id: 'deploy-1' });
-    const client = mkClient({ listSessions, submitRun, submitPipeline });
+    const client = mkClient({ listSessions, submitJob, pollJob, submitPipeline });
     history = new CommandHistory(container, { client, pollIntervalMs: 1e9 });
     const src = pushGameRecord(history);
 
@@ -1407,14 +1409,16 @@ describe('v2.24.0 — 继续改游戏 (reviseGame + UI)', () => {
 
     // 反查用了正确 agent + cwd
     expect(listSessions).toHaveBeenCalledWith('opengame', '/tmp/opengame');
-    // run 带正确 session_id + cwd header
-    expect(submitRun).toHaveBeenCalledTimes(1);
-    const runArg = submitRun.mock.calls[0][0];
-    expect(runArg.body.session_id).toBe('sess-game');
-    expect(runArg.body.agent_name).toBe('opengame');
-    expect(runArg.headers['X-ACP-Cwd']).toBe('/tmp/opengame');
-    expect(runArg.body.input[0].parts[0].content).toContain('加个计分板');
-    expect(runArg.body.input[0].parts[0].content).toContain('abc12345.html');
+    // 异步 job 带正确 session_id + cwd (body, 非 header)
+    expect(submitJob).toHaveBeenCalledTimes(1);
+    const jobArg = submitJob.mock.calls[0][0];
+    expect(jobArg.body.session_id).toBe('sess-game');
+    expect(jobArg.body.agent_name).toBe('opengame');
+    expect(jobArg.body.cwd).toBe('/tmp/opengame');
+    expect(jobArg.body.prompt).toContain('加个计分板');
+    expect(jobArg.body.prompt).toContain('abc12345.html');
+    // 轮询了 job
+    expect(pollJob).toHaveBeenCalledWith('job-1');
     // 部署 pipeline 覆盖同 gameId
     expect(submitPipeline).toHaveBeenCalledTimes(1);
     const pipeArg = submitPipeline.mock.calls[0][0];
@@ -1428,22 +1432,37 @@ describe('v2.24.0 — 继续改游戏 (reviseGame + UI)', () => {
     expect(revRec.remoteId).toBe('deploy-1');
   });
 
-  it('reviseGame: session 反查无匹配 → 仍提交 run (无 session_id, 走文件读取)', async () => {
+  it('reviseGame: session 反查无匹配 → 仍提交 job (无 session_id, 走文件读取)', async () => {
     const listSessions = vi.fn().mockResolvedValue({ items: [{ sessionId: 'x', prompt: 'unrelated', mtime: 1 }] });
-    const submitRun = vi.fn().mockResolvedValue({ session_id: 'new', output: [] });
-    const client = mkClient({ listSessions, submitRun });
+    const submitJob = vi.fn().mockResolvedValue({ job_id: 'job-2' });
+    const pollJob = vi.fn().mockResolvedValue({ status: 'completed', result: '' });
+    const client = mkClient({ listSessions, submitJob, pollJob });
     history = new CommandHistory(container, { client, pollIntervalMs: 1e9 });
     const src = pushGameRecord(history);
     await history.reviseGame(src, '改颜色');
-    const runArg = submitRun.mock.calls[0][0];
-    expect(runArg.body.session_id).toBeUndefined();
-    expect(runArg.body.input[0].parts[0].content).toContain('读取当前目录下的 abc12345.html');
+    const jobArg = submitJob.mock.calls[0][0];
+    expect(jobArg.body.session_id).toBeUndefined();
+    expect(jobArg.body.prompt).toContain('读取当前目录下的 abc12345.html');
   });
 
-  it('reviseGame: run 失败 → 记录 failed, 不调用部署', async () => {
-    const submitRun = vi.fn().mockRejectedValue(new Error('opengame down'));
+  it('reviseGame: opengame job failed → 记录 failed, 不调用部署', async () => {
+    const submitJob = vi.fn().mockResolvedValue({ job_id: 'job-3' });
+    const pollJob = vi.fn().mockResolvedValue({ status: 'failed', error: 'connection closed' });
     const submitPipeline = vi.fn();
-    const client = mkClient({ submitRun, submitPipeline });
+    const client = mkClient({ submitJob, pollJob, submitPipeline });
+    history = new CommandHistory(container, { client, pollIntervalMs: 1e9 });
+    const src = pushGameRecord(history);
+    await history.reviseGame(src, 'x');
+    expect(submitPipeline).not.toHaveBeenCalled();
+    const revRec = history.list()[0];
+    expect(revRec.status).toBe('failed');
+    expect(revRec.error).toMatch(/connection closed/);
+  });
+
+  it('reviseGame: submitJob 抛错 → 记录 failed, 不部署', async () => {
+    const submitJob = vi.fn().mockRejectedValue(new Error('opengame down'));
+    const submitPipeline = vi.fn();
+    const client = mkClient({ submitJob, submitPipeline });
     history = new CommandHistory(container, { client, pollIntervalMs: 1e9 });
     const src = pushGameRecord(history);
     await history.reviseGame(src, 'x');
